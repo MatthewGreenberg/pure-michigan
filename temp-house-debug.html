@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<body style="margin:0">
+<script type="module">
+import * as THREE from '/node_modules/three/build/three.module.js'
+
+const W = 2.1, D = 1.5, H = 1.05, P = 0.8, OV = 0.3, RT = 0.1
+
+function extrudeAlongRidge(shape, length) {
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false })
+  geo.translate(0, 0, -length / 2)
+  geo.rotateY(Math.PI / 2)
+  return geo
+}
+
+const bodyShape = new THREE.Shape()
+bodyShape.moveTo(-D / 2, 0)
+bodyShape.lineTo(D / 2, 0)
+bodyShape.lineTo(D / 2, H)
+bodyShape.lineTo(0, H + P)
+bodyShape.lineTo(-D / 2, H)
+bodyShape.closePath()
+
+const eaveX = D / 2 + OV
+const eaveY = H - OV * (P / (D / 2))
+const roofShape = new THREE.Shape()
+roofShape.moveTo(-eaveX, eaveY)
+roofShape.lineTo(0, H + P)
+roofShape.lineTo(eaveX, eaveY)
+roofShape.lineTo(eaveX, eaveY + RT)
+roofShape.lineTo(0, H + P + RT)
+roofShape.lineTo(-eaveX, eaveY + RT)
+roofShape.closePath()
+
+const scene = new THREE.Scene()
+scene.background = new THREE.Color('#88aabb')
+scene.add(new THREE.AmbientLight('#c8d0b5', 1.25))
+const sun = new THREE.DirectionalLight('#ffe7bd', 1.15)
+sun.position.set(6, 10, 4)
+scene.add(sun)
+
+const plaster = new THREE.MeshLambertMaterial({ color: '#f0e6cf', flatShading: true })
+const clay = new THREE.MeshLambertMaterial({ color: '#a8553d', flatShading: true })
+const brickM = new THREE.MeshLambertMaterial({ color: '#96604c' })
+
+const body = new THREE.Mesh(extrudeAlongRidge(bodyShape, W), plaster)
+const roof = new THREE.Mesh(extrudeAlongRidge(roofShape, W + 0.35), clay)
+const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.62, 0.22), brickM)
+chimney.position.set(0.65, H + P + 0.02, 0)
+const house = new THREE.Group()
+house.rotation.y = 0.12
+house.add(body, roof, chimney)
+scene.add(house)
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 20),
+  new THREE.MeshLambertMaterial({ color: '#7a9a5a' })
+)
+ground.rotation.x = -Math.PI / 2
+scene.add(ground)
+
+// same bearing as the demo camera relative to the house
+const camera = new THREE.PerspectiveCamera(35, 800 / 600, 0.1, 100)
+camera.position.set(5.4, 2.9, 5.8)
+camera.lookAt(0, 0.9, 0)
+
+const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.setSize(800, 600)
+document.body.appendChild(renderer.domElement)
+renderer.render(scene, camera)
+window.__done = true
+</script>
+</body>
+</html>
