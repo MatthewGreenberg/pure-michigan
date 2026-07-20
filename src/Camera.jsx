@@ -14,8 +14,8 @@ const INTRO_SECONDS = 3.5
 const AZIMUTH_OFF = -0.34
 const POLAR_OFF = 0.22 // start lower (closer to street level), rising into the iso view
 const ZOOM_OFF = 0.8
-const DEFAULT_ZOOM_SCALE = 0.88
 const MIN_ZOOM_SCALE = 0.78
+const DEFAULT_ZOOM_SCALE = MIN_ZOOM_SCALE
 
 // Isometric corner view: the square tile reads as a diamond floating on its
 // soil block, ocean along the far edge. The target sits below ground so the

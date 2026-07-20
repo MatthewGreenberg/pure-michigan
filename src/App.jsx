@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, createPortal, useFrame } from '@react-three/fiber'
 import { ScreenQuad, useFBO } from '@react-three/drei'
 import * as THREE from 'three'
@@ -7,7 +7,8 @@ import { Birds } from './Birds.jsx'
 import { Camera } from './Camera.jsx'
 import { City } from './city/City.jsx'
 import { Grass } from './grass/Grass.jsx'
-import { MICHIGAN_VIEWBOX, MITTEN_PATH, MittenLoader, UP_PATH } from './MittenLoader.jsx'
+import { MichiganHub } from './MichiganHub.jsx'
+import { MittenLoader } from './MittenLoader.jsx'
 import { Rocks } from './rocks/Rocks.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
@@ -20,8 +21,13 @@ import { GRID, TILE } from './grass/constants.js'
 
 const TRANSITION_SECONDS = 1.6
 
-// Detroit is the default opening scene; deep-link #meadow to start up north
-const START_CITY = typeof window !== 'undefined' && window.location.hash !== '#meadow'
+// The map is the front door; scene hashes remain useful for direct links.
+const START_SCENE = typeof window === 'undefined'
+  ? 'map'
+  : window.location.hash === '#city' || window.location.hash === '#meadow'
+    ? window.location.hash.slice(1)
+    : 'map'
+const hubTransition = { from: START_SCENE, to: START_SCENE, p: 1 }
 
 // Detroit's steely sky lives on its own material clone — each scene renders
 // its own sky into its own target, so no palette crossfade bookkeeping.
@@ -32,12 +38,13 @@ citySkyMaterial.uniforms.uSkyBottom.value.set('#cfc3a9')
 citySkyMaterial.uniforms.uHorizonGlow.value.set('#ffffff')
 
 // Fullscreen compositor: the default scene contains only this quad, which
-// mixes the two scene render targets. StylePass grades the composed image.
+// mixes whichever two scene targets are transitioning. StylePass grades the
+// composed image, including the Michigan hub.
 const blendMaterial = new THREE.ShaderMaterial({
   uniforms: {
-    tGrass: { value: null },
-    tCity: { value: null },
-    uMix: { value: START_CITY ? 1 : 0 },
+    tFrom: { value: null },
+    tTo: { value: null },
+    uMix: { value: 1 },
   },
   depthTest: false,
   depthWrite: false,
@@ -53,8 +60,8 @@ const blendMaterial = new THREE.ShaderMaterial({
   // Not a crossfade: a noise-ragged diagonal front sweeps the frame, with
   // heat-ripple warp and a glowing ember rim where the scenes swap.
   fragmentShader: /* glsl */ `
-    uniform sampler2D tGrass;
-    uniform sampler2D tCity;
+    uniform sampler2D tFrom;
+    uniform sampler2D tTo;
     uniform float uMix;
     varying vec2 vUv;
 
@@ -76,8 +83,8 @@ const blendMaterial = new THREE.ShaderMaterial({
 
     void main() {
       float m = uMix;
-      if (m <= 0.0) { gl_FragColor = texture2D(tGrass, vUv); return; }
-      if (m >= 1.0) { gl_FragColor = texture2D(tCity, vUv); return; }
+      if (m <= 0.0) { gl_FragColor = texture2D(tFrom, vUv); return; }
+      if (m >= 1.0) { gl_FragColor = texture2D(tTo, vUv); return; }
 
       // ragged diagonal sweep field: front travels corner to corner
       float sweep = dot(vUv, vec2(0.62, 0.38));
@@ -86,7 +93,7 @@ const blendMaterial = new THREE.ShaderMaterial({
       float W = 0.14; // burn-edge width
       float t = mix(-W, 1.0 + W, m); // threshold overshoots so both ends fully resolve
       float d = field - t;
-      float mask = smoothstep(W * 0.5, -W * 0.5, d); // 1 = incoming city
+      float mask = smoothstep(W * 0.5, -W * 0.5, d); // 1 = incoming scene
 
       // heat-ripple warp near the front, pulling both scenes apart
       float edge = 1.0 - smoothstep(0.0, W, abs(d));
@@ -95,7 +102,7 @@ const blendMaterial = new THREE.ShaderMaterial({
         noise(vUv * 40.0 + 7.3 - m * 10.0)
       ) - 0.5) * edge * 0.025;
 
-      vec4 col = mix(texture2D(tGrass, vUv + warp), texture2D(tCity, vUv - warp), mask);
+      vec4 col = mix(texture2D(tFrom, vUv + warp), texture2D(tTo, vUv - warp), mask);
 
       // glowing ember rim with a hot white core on the dissolve front
       float rim = edge * edge;
@@ -107,47 +114,97 @@ const blendMaterial = new THREE.ShaderMaterial({
   `,
 })
 
-function Scenes({ toCity, children }) {
+const NO_RAYCAST = () => null
+
+function Scenes({ activeScene, onSelect, children }) {
+  const mapScene = useMemo(() => new THREE.Scene(), [])
   const grassScene = useMemo(() => new THREE.Scene(), [])
   const cityScene = useMemo(() => new THREE.Scene(), [])
+  const mapFBO = useFBO({ samples: 4 })
   const grassFBO = useFBO({ samples: 4 })
   const cityFBO = useFBO({ samples: 4 })
-  const p = useRef(START_CITY ? 1 : 0)
+  const fromScene = useRef(START_SCENE)
+  const toScene = useRef(START_SCENE)
+  const p = useRef(1)
+  const grassRoot = useRef(null)
+  const cityRoot = useRef(null)
+
+  useEffect(() => {
+    if (activeScene === toScene.current) return
+    fromScene.current = p.current < 0.5 ? fromScene.current : toScene.current
+    toScene.current = activeScene
+    p.current = 0
+    hubTransition.from = fromScene.current
+    hubTransition.to = activeScene
+    hubTransition.p = 0
+  }, [activeScene])
 
   useFrame(({ gl, camera }, rawDt) => {
     const dt = Math.min(rawDt, 0.05)
-    p.current = THREE.MathUtils.clamp(p.current + (toCity ? dt : -dt) / TRANSITION_SECONDS, 0, 1)
-    blendMaterial.uniforms.uMix.value = THREE.MathUtils.smoothstep(p.current, 0, 1)
-    blendMaterial.uniforms.tGrass.value = grassFBO.texture
-    blendMaterial.uniforms.tCity.value = cityFBO.texture
+    p.current = THREE.MathUtils.clamp(p.current + dt / TRANSITION_SECONDS, 0, 1)
+    hubTransition.p = p.current
+    const eased = THREE.MathUtils.smoothstep(p.current, 0, 1)
+    blendMaterial.uniforms.uMix.value = eased
+    if (p.current >= 1) fromScene.current = toScene.current
 
-    // the postprocessing composer leaves gl.autoClear=false — clear explicitly
-    gl.setRenderTarget(grassFBO)
-    gl.clear()
-    gl.render(grassScene, camera)
-    gl.setRenderTarget(cityFBO)
-    gl.clear()
-    gl.render(cityScene, camera)
+    // Diorama zoom: incoming scene dollies up to full scale, outgoing recedes.
+    // Uniform scale about the origin under the ortho camera reads as a zoom;
+    // the sky ScreenQuads sit outside these roots so they stay fullscreen.
+    const transitioning = fromScene.current !== toScene.current
+    for (const [name, root] of [['meadow', grassRoot], ['city', cityRoot]]) {
+      if (!root.current) continue
+      let s = 1
+      if (transitioning && name === toScene.current) s = THREE.MathUtils.lerp(0.55, 1, eased)
+      else if (transitioning && name === fromScene.current) s = THREE.MathUtils.lerp(1, 0.55, eased)
+      root.current.scale.setScalar(s)
+    }
+
+    const scenes = {
+      map: [mapScene, mapFBO],
+      meadow: [grassScene, grassFBO],
+      city: [cityScene, cityFBO],
+    }
+    const required = fromScene.current === toScene.current
+      ? [toScene.current]
+      : [fromScene.current, toScene.current]
+
+    // The composer leaves gl.autoClear=false. Render only the active pair so
+    // the hub adds no permanent third-scene cost once a diorama is open.
+    for (const name of required) {
+      const [scene, target] = scenes[name]
+      gl.setRenderTarget(target)
+      gl.clear()
+      gl.render(scene, camera)
+    }
+
+    blendMaterial.uniforms.tFrom.value = scenes[fromScene.current][1].texture
+    blendMaterial.uniforms.tTo.value = scenes[toScene.current][1].texture
     gl.setRenderTarget(null)
   }, 0.5)
 
   return (
     <>
       {createPortal(
+        <MichiganHub onSelect={onSelect} transition={hubTransition} />,
+        mapScene
+      )}
+      {createPortal(
         <>
           <Sky />
-          {children}
+          <group ref={grassRoot}>{children}</group>
         </>,
         grassScene
       )}
       {createPortal(
         <>
-          <ScreenQuad material={citySkyMaterial} renderOrder={-10000} />
-          <City />
+          <ScreenQuad material={citySkyMaterial} renderOrder={-10000} raycast={NO_RAYCAST} />
+          <group ref={cityRoot}>
+            <City />
+          </group>
         </>,
         cityScene
       )}
-      <ScreenQuad material={blendMaterial} />
+      <ScreenQuad material={blendMaterial} raycast={NO_RAYCAST} />
     </>
   )
 }
@@ -165,75 +222,54 @@ const LOCATIONS = [
   },
 ]
 
-function Hud({ toCity, onSelect }) {
-  const active = LOCATIONS[toCity ? 0 : 1]
+function Hud({ activeScene, onSelect }) {
+  const active = LOCATIONS.find((location) => location.id === activeScene)
+  const onMap = activeScene === 'map'
 
   return (
-    <div className="hud" data-location={active.id}>
-      <header className="hud-topbar">
-        <div className="hud-brand" aria-label="Great Lakes Field Notes">
-          <span className="hud-brand-mark">MI</span>
-          <span className="hud-brand-name">
-            Great Lakes
-            <small>Field notes</small>
-          </span>
-        </div>
-
-        <p className="hud-current"><span>{active.chapter}</span> Viewing {active.name}</p>
-
-        <div className="hud-status">
-          <span className="hud-status-dot" />
-          Live terrain
-        </div>
-      </header>
-
-      <nav className="hud-map" aria-labelledby="hud-map-title">
-        <div className="hud-map-heading">
-          <p id="hud-map-title">Explore Michigan</p>
-          <span>Choose a destination</span>
-        </div>
-        <div className="hud-map-plot">
-          <svg viewBox={MICHIGAN_VIEWBOX} aria-hidden="true" focusable="false">
-            <path className="hud-map-shape hud-map-up" d={UP_PATH} />
-            <path className="hud-map-shape" d={MITTEN_PATH} />
-          </svg>
+    <div className="hud" data-location={active?.id || 'map'}>
+      <div className={`hud-island${onMap ? ' is-map' : ' is-scene'}`}>
+        <nav
+          className="hud-island-map"
+          aria-label="Michigan destinations"
+          aria-hidden={!onMap}
+        >
+          <span className="hud-island-brand">MI <small>Field atlas</small></span>
           {LOCATIONS.map((location) => {
-            const selected = location.id === active.id
             return (
               <button
-                className={`hud-map-stop hud-map-stop-${location.id}${selected ? ' active' : ''}`}
+                className="hud-island-destination"
                 type="button"
                 key={location.id}
-                onClick={() => onSelect(location.id === 'city')}
-                aria-current={selected ? 'location' : undefined}
-                aria-label={`View ${location.name}, chapter ${location.chapter}`}
+                onClick={() => onSelect(location.id)}
+                tabIndex={onMap ? 0 : -1}
               >
-                <span className="hud-map-pin"><i>{location.chapter}</i></span>
-                <span className="hud-map-label">{location.name}</span>
+                <span>{location.chapter}</span>
+                {location.name}
               </button>
             )
           })}
-        </div>
-        <p className="hud-map-credit">
-          Outline by <a href="https://commons.wikimedia.org/wiki/File:SimpleMichigan.svg" target="_blank" rel="noreferrer">Phizzy</a>
-          {' · '}<a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noreferrer">CC BY-SA 3.0</a>
-        </p>
-      </nav>
-
-      <footer className="hud-footer">
-        <p><span className="hud-drag-icon" aria-hidden="true" /> Drag to look · scroll to zoom</p>
-        <p className="hud-progress"><strong>{active.chapter}</strong> / {String(LOCATIONS.length).padStart(2, '0')}</p>
-      </footer>
-
-      <div className="hud-corners" aria-hidden="true">
-        <span /><span /><span /><span />
+        </nav>
+        <button
+          className="hud-island-back"
+          type="button"
+          onClick={() => onSelect('map')}
+          tabIndex={onMap ? -1 : 0}
+          aria-hidden={onMap}
+        >
+          <span aria-hidden="true">←</span>
+          <span className="hud-island-back-copy">
+            Back to map
+            <small>{active?.name}</small>
+          </span>
+        </button>
       </div>
     </div>
   )
 }
 
 export default function App() {
-  const [toCity, setToCity] = useState(START_CITY)
+  const [activeScene, setActiveScene] = useState(START_SCENE)
 
   useControls('background', {
     skyTop: { value: '#ffffff', label: 'sky top', onChange: (v) => { skyUniforms.uSkyTop.value.set(v) } },
@@ -255,7 +291,7 @@ export default function App() {
       <Canvas shadows dpr={[1, 2]} gl={{ antialias: true, alpha: false }}>
         <Suspense fallback={null}>
           <Camera />
-          <Scenes toCity={toCity}>
+          <Scenes activeScene={activeScene} onSelect={setActiveScene}>
             <Grass />
             <Rocks />
             <Ocean />
@@ -270,7 +306,7 @@ export default function App() {
           <StylePass />
         </Suspense>
       </Canvas>
-      <Hud toCity={toCity} onSelect={setToCity} />
+      <Hud activeScene={activeScene} onSelect={setActiveScene} />
       <MittenLoader />
     </main>
   )
