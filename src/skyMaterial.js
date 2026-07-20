@@ -3,10 +3,10 @@ import * as THREE from 'three'
 // Shared because the Leva background controls update these values without
 // asking React to rebuild the full-screen material.
 export const skyUniforms = {
-  uSkyTop: { value: new THREE.Color('#66859a') },
+  uSkyTop: { value: new THREE.Color('#ffffff') },
   uSkyMiddle: { value: new THREE.Color('#9bb5ad') },
   uSkyBottom: { value: new THREE.Color('#d7d5ab') },
-  uHorizonGlow: { value: new THREE.Color('#f5dda4') },
+  uHorizonGlow: { value: new THREE.Color('#ffffff') },
 }
 
 export const skyMaterial = new THREE.ShaderMaterial({

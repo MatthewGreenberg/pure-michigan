@@ -111,13 +111,13 @@ class SereneEffectImpl extends Effect {
   constructor({
     wash = 0.2,
     washRadius = 1.8,
-    saturation = 0.9,
-    greenSoftness = 0.9,
+    saturation = 0.01,
+    greenSoftness = 0.43,
     shadowTint = '#718792',
     highlightTint = '#ffe4bb',
     hazeColor = '#a9c6c0',
-    haze = 0.065,
-    vignette = 0.055,
+    haze = 0.07,
+    vignette = 0.06,
     dither = 0.006,
   } = {}) {
     super('SereneEffect', sereneFragmentShader, {
@@ -147,6 +147,9 @@ const legacyFragmentShader = /* glsl */ `
   uniform int uMode;
   uniform float uEdge;
   uniform float uLevels;
+  uniform float uStrength;
+  uniform float uInkSaturation;
+  uniform float uLegacyVignette;
 
   float legacyLuma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -176,6 +179,8 @@ const legacyFragmentShader = /* glsl */ `
       vec3 ink = vec3(0.10, 0.12, 0.17);
       float wash = floor(legacyLuma(c) * uLevels) / max(uLevels - 1.0, 1.0);
       color = mix(ink, paper, clamp(wash, 0.0, 1.0));
+      // bleed the original chroma back into the duotone wash
+      color += (c - vec3(legacyLuma(c))) * uInkSaturation;
       color = mix(color, ink, edge);
     } else if (uMode == 1) {
       vec3 banded = (floor(c * uLevels) + 0.5) / uLevels;
@@ -189,12 +194,25 @@ const legacyFragmentShader = /* glsl */ `
       color = vec3(gray);
     }
 
-    outputColor = vec4(color, inputColor.a);
+    color = mix(c, color, uStrength);
+
+    vec2 vignetteUv = (uv - 0.5) * vec2(0.86, 1.0);
+    float vignette = smoothstep(0.38, 0.72, length(vignetteUv));
+    color *= 1.0 - vignette * uLegacyVignette;
+
+    outputColor = vec4(max(color, 0.0), inputColor.a);
   }
 `
 
 class LegacyStyleEffectImpl extends Effect {
-  constructor({ mode = 0, edge = 3, levels = 5 } = {}) {
+  constructor({
+    mode = 0,
+    edge = 3,
+    levels = 12,
+    strength = 0.51,
+    inkSaturation = 0.96,
+    legacyVignette = 0.5,
+  } = {}) {
     super('LegacyStyleEffect', legacyFragmentShader, {
       blendFunction: BlendFunction.NORMAL,
       attributes: EffectAttribute.CONVOLUTION,
@@ -202,6 +220,9 @@ class LegacyStyleEffectImpl extends Effect {
         ['uMode', new Uniform(mode)],
         ['uEdge', new Uniform(edge)],
         ['uLevels', new Uniform(levels)],
+        ['uStrength', new Uniform(strength)],
+        ['uInkSaturation', new Uniform(inkSaturation)],
+        ['uLegacyVignette', new Uniform(legacyVignette)],
       ]),
     })
   }
@@ -223,17 +244,32 @@ export function StylePass() {
     bloom,
     edge,
     levels,
+    inkStrength,
+    inkSaturation,
+    inkVignette,
   } = useControls('style', {
-    style: { value: 'serene', options: ['serene', 'none', 'ink', 'anime', 'outline', 'b&w'] },
+    style: { value: 'ink', options: ['serene', 'none', 'ink', 'anime', 'outline', 'b&w'] },
     wash: { value: 0.2, min: 0, max: 0.6, step: 0.01, label: 'color wash' },
     washRadius: { value: 1.8, min: 0.5, max: 4, step: 0.1, label: 'wash radius' },
-    saturation: { value: 0.9, min: 0, max: 1.4, step: 0.01 },
-    greenSoftness: { value: 0.9, min: 0, max: 1.5, step: 0.01, label: 'soften greens' },
-    haze: { value: 0.065, min: 0, max: 0.4, step: 0.005 },
-    vignette: { value: 0.055, min: 0, max: 0.3, step: 0.005 },
-    bloom: { value: 0.14, min: 0, max: 1, step: 0.01 },
+    saturation: { value: 0.01, min: 0, max: 1.4, step: 0.01 },
+    greenSoftness: { value: 0.43, min: 0, max: 1.5, step: 0.01, label: 'soften greens' },
+    haze: { value: 0.07, min: 0, max: 0.4, step: 0.005 },
+    vignette: { value: 0.06, min: 0, max: 0.3, step: 0.005 },
+    bloom: { value: 0.38, min: 0, max: 1, step: 0.01 },
     edge: { value: 3, min: 0, max: 10, step: 0.1, label: 'legacy lines' },
-    levels: { value: 5, min: 2, max: 12, step: 1, label: 'legacy bands' },
+    levels: { value: 12, min: 2, max: 12, step: 1, label: 'legacy bands' },
+    inkStrength: {
+      value: 0.51, min: 0, max: 1, step: 0.01, label: 'strength',
+      render: (get) => !['serene', 'none'].includes(get('style.style')),
+    },
+    inkSaturation: {
+      value: 2.0, min: 0, max: 15.5, step: 0.01, label: 'ink saturation',
+      render: (get) => get('style.style') === 'ink',
+    },
+    inkVignette: {
+      value: 0.5, min: 0, max: 0.5, step: 0.005, label: 'vignette',
+      render: (get) => !['serene', 'none'].includes(get('style.style')),
+    },
   }, { collapsed: false, order: 8 })
 
   if (style === 'none') return null
@@ -241,7 +277,14 @@ export function StylePass() {
   if (style !== 'serene') {
     return (
       <EffectComposer multisampling={4}>
-        <WrappedLegacyEffect mode={LEGACY_MODES[style]} edge={edge} levels={levels} />
+        <WrappedLegacyEffect
+          mode={LEGACY_MODES[style]}
+          edge={edge}
+          levels={levels}
+          strength={inkStrength}
+          inkSaturation={inkSaturation}
+          legacyVignette={inkVignette}
+        />
       </EffectComposer>
     )
   }
