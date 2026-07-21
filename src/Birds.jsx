@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { Fragment, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { FIELD_HALF } from './coast.js'
+import { sceneRendering } from './sceneState.js'
 
 const COUNT = 5
 const BOUND = FIELD_HALF - 1 // path amplitudes never exceed this, so birds stay over the tile
@@ -90,6 +91,7 @@ export function Birds() {
   const shadowRefs = useRef([])
 
   useFrame(({ clock }) => {
+    if (!sceneRendering('meadow')) return
     const t = clock.elapsedTime
     refs.current.forEach((g, i) => {
       if (!g) return

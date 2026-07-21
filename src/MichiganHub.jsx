@@ -4,6 +4,8 @@ import { Text, useCursor } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { MITTEN_PATH, UP_PATH } from './MittenLoader.jsx'
+import { uniforms as grassUniforms } from './grass/material.js'
+import { sceneRendering } from './sceneState.js'
 
 const MAP_SCALE = 0.0225
 const MAP_CENTER_X = 258
@@ -92,6 +94,7 @@ function scatterTrees(poly, count, seed, hMin, hMax) {
     const z = -sy
     if (Math.hypot(x - DESTINATION_POSITIONS.city.x, z - DESTINATION_POSITIONS.city.z) < 1.6) continue
     if (Math.hypot(x - DESTINATION_POSITIONS.meadow.x, z - DESTINATION_POSITIONS.meadow.z) < 1.3) continue
+    if (Math.hypot(x - DESTINATION_POSITIONS.annarbor.x, z - DESTINATION_POSITIONS.annarbor.z) < 1.3) continue
     trees.push([x, z, hMin + rand() * (hMax - hMin)])
   }
   return trees
@@ -100,17 +103,138 @@ function scatterTrees(poly, count, seed, hMin, hMax) {
 const landGeometries = [buildLandGeometry(UP_PATH), buildLandGeometry(MITTEN_PATH)]
 const landOutlines = landGeometries.map((geometry) => new THREE.EdgesGeometry(geometry, 28))
 const landMaterials = [
-  new THREE.MeshStandardMaterial({ color: '#eee8d5', roughness: 0.96, metalness: 0 }),
+  new THREE.MeshStandardMaterial({ color: '#c5d6b5', roughness: 0.96, metalness: 0 }),
   new THREE.MeshStandardMaterial({ color: '#7f8e82', roughness: 1, metalness: 0 }),
 ]
 const outlineMaterial = new THREE.LineBasicMaterial({ color: '#667268', transparent: true, opacity: 0.78 })
-const waterMaterial = new THREE.MeshStandardMaterial({ color: '#b8c6bd', roughness: 1, metalness: 0 })
+// Shore mask: white blurred land fill minus sharp black land fill = a rim fading
+// outward from the coastline. Sampled by the water shader so foam only laps the shore.
+// ponytail: canvas blur, not a real distance field — good enough at this rim width
+function bakeShoreMask() {
+  const polys = [UP_PATH, MITTEN_PATH].map(pathToShapePoints)
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const poly of polys) {
+    for (const p of poly) {
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y)
+      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y)
+    }
+  }
+  const margin = 2.5
+  minX -= margin; minY -= margin; maxX += margin; maxY += margin
+  const size = 512
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, size, size)
+  const trace = (poly) => {
+    ctx.beginPath()
+    poly.forEach((p, i) => {
+      const x = ((p.x - minX) / (maxX - minX)) * size
+      const y = size - ((p.y - minY) / (maxY - minY)) * size
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)
+    })
+    ctx.closePath()
+  }
+  ctx.fillStyle = '#fff'
+  ctx.filter = 'blur(14px)'
+  for (const poly of polys) { trace(poly); ctx.fill() }
+  ctx.filter = 'none'
+  ctx.fillStyle = '#000'
+  for (const poly of polys) { trace(poly); ctx.fill() }
+  return {
+    texture: new THREE.CanvasTexture(canvas),
+    min: new THREE.Vector2(minX, minY),
+    range: new THREE.Vector2(maxX - minX, maxY - minY),
+  }
+}
+const shoreMask = bakeShoreMask()
+
+// stylized flat-shaded water: two-tone swell + foam lapping the shoreline, shared grass uTime drives it
+const waterMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: grassUniforms.uTime,
+    uShore: { value: shoreMask.texture },
+    uShoreMin: { value: shoreMask.min },
+    uShoreRange: { value: shoreMask.range },
+    uWaterA: { value: new THREE.Color('#91aece') },
+    uWaterB: { value: new THREE.Color('#1d70b4') },
+  },
+  vertexShader: /* glsl */ `
+    uniform float uTime;
+    varying vec2 vP;
+    void main() {
+      vP = position.xy;
+      vec3 p = position;
+      // plane is rotated -PI/2, local z is world up — very slight bob, stays under the land at y=0
+      p.z += (sin(position.x * 0.9 + uTime * 0.4) + sin(position.y * 1.1 - uTime * 0.32)) * 0.012;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform float uTime;
+    uniform sampler2D uShore;
+    uniform vec2 uShoreMin;
+    uniform vec2 uShoreRange;
+    uniform vec3 uWaterA;
+    uniform vec3 uWaterB;
+    varying vec2 vP;
+    float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+    float vnoise(vec2 q) {
+      vec2 i = floor(q);
+      vec2 f = fract(q);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+                 mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    float fbm(vec2 q) {
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 3; i++) { v += a * vnoise(q); q *= 2.1; a *= 0.5; }
+      return v;
+    }
+    void main() {
+      vec2 p = vP;
+      // slow-drifting fbm samples the A→B blue gradient (leva "water" folder)
+      float n = fbm(p * 0.16 + vec2(uTime * 0.03, -uTime * 0.02));
+      vec3 col = mix(uWaterA, uWaterB, smoothstep(0.2, 0.8, n));
+      // ripple sheen dialed way down — a whisper of movement, no gloss
+      float r1 = sin(p.x * 2.2 + uTime * 0.5 + sin(p.y * 1.8 + uTime * 0.3) * 1.4);
+      float r2 = sin(p.y * 2.6 - uTime * 0.4 + sin(p.x * 2.0 - uTime * 0.25) * 1.3);
+      col = mix(col, vec3(0.44, 0.49, 0.53), smoothstep(0.75, 1.0, r1 * 0.5 + r2 * 0.5) * 0.12);
+      // faint survey grid under the surface (~7% opacity)
+      vec2 g = abs(fract(p / 2.4) - 0.5);
+      float grid = 1.0 - smoothstep(0.012, 0.03, min(g.x, g.y));
+      col = mix(col, vec3(0.78, 0.83, 0.87), grid * 0.07);
+      // shore mask ramps ~0.5 at the waterline down to 0 offshore — a distance proxy
+      float shore = texture2D(uShore, (p - uShoreMin) / uShoreRange).r;
+      // darken toward the coastline so the cream landmass silhouette reads harder
+      col *= 1.0 - smoothstep(0.04, 0.42, shore) * 0.28;
+      // lapping bands: thin clean rings traveling toward land
+      float band = sin(shore * 28.0 - uTime * 1.1 + sin(p.x * 1.6 + p.y * 1.4) * 0.25);
+      float foam = smoothstep(0.86, 0.97, band) * smoothstep(0.03, 0.3, shore) * 0.5;
+      // narrow wash right at the waterline
+      foam += smoothstep(0.42, 0.5, shore) * 0.6;
+      col = mix(col, vec3(0.88, 0.91, 0.93), min(foam, 1.0) * 0.7);
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+})
 const cityMaterial = new THREE.MeshStandardMaterial({ color: '#7c8986', roughness: 0.9 })
 const treeMaterial = new THREE.MeshStandardMaterial({ color: '#748769', roughness: 1 })
 const DESTINATION_POSITIONS = {
   // inland of the SE tip — previous spot sat slightly offshore and missed land hits
   city: new THREE.Vector3(4.9, 0, 4.15),
   meadow: new THREE.Vector3(1.15, 0, -0.68),
+  // west of Detroit, verified on-polygon with >=0.6 inland margin
+  annarbor: new THREE.Vector3(2.9, 0, 3.6),
+}
+
+// per-destination marker palette (hover light / area glow / pulse ring / pin body+emissive)
+const MARKER_COLORS = {
+  city: { light: '#8fc5d2', glow: '#20606f', pulse: '#1d4d59', pin: '#4d7580', pinEmissive: '#2e7381' },
+  meadow: { light: '#b8d69e', glow: '#42663a', pulse: '#3d5a36', pin: '#6f8b65', pinEmissive: '#4e7040' },
+  annarbor: { light: '#ffe28a', glow: '#8a6d1a', pulse: '#8a6d1a', pin: '#ffcb05', pinEmissive: '#b08b00' },
 }
 // tilt axis ⟂ to the corner view diagonal — tips the map plane toward the iso camera
 const TILT_AXIS = new THREE.Vector3(1, 0, -1).normalize()
@@ -118,7 +242,6 @@ const Y_AXIS = new THREE.Vector3(0, 1, 0)
 const focusPosition = new THREE.Vector3()
 const _parentQ = new THREE.Quaternion()
 const _camQ = new THREE.Quaternion()
-const _parentEuler = new THREE.Euler()
 // Scenes FBO pass is priority 0.5 — run just before so portal billboards stick
 const BEFORE_FBO = 0.4
 const NO_RAYCAST = () => null
@@ -170,6 +293,23 @@ const MAP_TREES = [
   ...scatterTrees(pathToShapePoints(MITTEN_PATH), 24, 11, 0.3, 0.46),
 ]
 
+// One unit cone, uniformly scaled per instance (radius = 0.26 × height holds
+// under uniform scale) — one draw call instead of a mesh per tree.
+const unitTreeGeometry = new THREE.ConeGeometry(0.26, 1, 7)
+function makeTreeInstances(trees) {
+  const mesh = new THREE.InstancedMesh(unitTreeGeometry, treeMaterial, trees.length)
+  const m = new THREE.Matrix4()
+  trees.forEach(([x, z, height], i) => {
+    m.makeScale(height, height, height).setPosition(x, LAND_TOP + height / 2, z)
+    mesh.setMatrixAt(i, m)
+  })
+  mesh.raycast = NO_RAYCAST
+  mesh.frustumCulled = false // instance bounds aren't tracked; map fills the view
+  return mesh
+}
+const mapTreesMesh = makeTreeInstances(MAP_TREES)
+const northTreesMesh = makeTreeInstances(NORTH_TREES)
+
 function CityPreview() {
   return (
     <group>
@@ -182,29 +322,85 @@ function CityPreview() {
   )
 }
 
-function NorthPreview() {
-  return (
-    <group>
-      {NORTH_TREES.map(([x, z, height], index) => (
-        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial} raycast={NO_RAYCAST}>
-          <coneGeometry args={[height * 0.26, height, 7]} />
-        </mesh>
-      ))}
-    </group>
-  )
-}
+// Michigan block-M flag: maize M (m.png) composited over the blue field in
+// the fragment, cloth waved in the vertex off the shared grass uTime — no
+// useFrame. Hoist (uv.x=0) is pinned to the pole, amplitude grows to the fly.
+const flagTexture = new THREE.TextureLoader().load('/m.png')
+flagTexture.colorSpace = THREE.SRGBColorSpace
+const flagMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: grassUniforms.uTime,
+    uMap: { value: flagTexture },
+    uSpeed: { value: 1 },
+  },
+  side: THREE.DoubleSide,
+  vertexShader: /* glsl */ `
+    uniform float uTime;
+    uniform float uSpeed;
+    varying vec2 vUv;
+    varying float vShade;
+    void main() {
+      vUv = uv;
+      vec3 p = position;
+      float t = uTime * 4.6 * uSpeed;
+      float phase = uv.x * 7.0 - t;
+      float wave = sin(phase) * 0.7 + sin(uv.x * 12.0 - t * 1.6 + 1.7) * 0.3;
+      p.z += wave * 0.085 * uv.x;
+      p.y += sin(uv.x * 6.0 - t * 0.9) * 0.02 * uv.x;
+      // fake cloth shading off the wave slope
+      vShade = cos(phase) * uv.x;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D uMap;
+    varying vec2 vUv;
+    varying float vShade;
+    void main() {
+      // shrink the M toward the cloth center; outside the window is field blue
+      vec2 uv2 = (vUv - 0.5) * 1.55 + 0.5;
+      vec4 tex = texture2D(uMap, uv2);
+      float inside = step(abs(uv2.x - 0.5), 0.5) * step(abs(uv2.y - 0.5), 0.5);
+      vec3 col = mix(vec3(0.0, 0.055, 0.16), tex.rgb, tex.a * inside);
+      col *= 0.86 + vShade * 0.2;
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+})
+// calm clone for the big Ann Arbor flag — slower wave reads gentle at 4x size.
+// clone() deep-copies uniforms, so re-point uTime/uMap at the shared objects.
+const calmFlagMaterial = flagMaterial.clone()
+calmFlagMaterial.uniforms.uTime = grassUniforms.uTime
+calmFlagMaterial.uniforms.uMap.value = flagTexture
+calmFlagMaterial.uniforms.uSpeed.value = 0.42
 
-function MapTrees() {
+const flagGeometry = new THREE.PlaneGeometry(0.55, 0.36, 24, 12)
+flagGeometry.translate(0.275, 0, 0) // hoist edge at x=0, on the pole
+// standard-lit: the map has a full rig; AnnArbor.jsx mounts a small flag-only
+// rig (its baked GLB materials are all unlit basic, so lights touch only these)
+const poleMaterial = new THREE.MeshStandardMaterial({ color: '#b9bcc0', roughness: 0.35, metalness: 0.55 })
+const finialMaterial = new THREE.MeshStandardMaterial({ color: '#d9b23a', roughness: 0.3, metalness: 0.65 })
+
+export function MichiganFlag({ position = [0.45, LAND_TOP, 0.06], scale = 0.7, yaw = -0.12, material = flagMaterial }) {
   return (
-    <group>
-      {MAP_TREES.map(([x, z, height], index) => (
-        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial} raycast={NO_RAYCAST}>
-          <coneGeometry args={[height * 0.26, height, 7]} />
-        </mesh>
-      ))}
+    // slight yaw so the cloth reads face-on from the iso corner view; offset
+    // is screen-right of the pin under the iso camera (world (1,0,-1)/√2
+    // rotated into the angle-0.91 land frame), pole taller so the cloth
+    // rides up beside the pin instead of under it
+    <group position={position} rotation-y={yaw} scale={scale}>
+      <mesh position-y={0.6} material={poleMaterial} castShadow raycast={NO_RAYCAST}>
+        <cylinderGeometry args={[0.014, 0.022, 1.2, 8]} />
+      </mesh>
+      <mesh position-y={1.21} material={finialMaterial} raycast={NO_RAYCAST}>
+        <sphereGeometry args={[0.032, 12, 8]} />
+      </mesh>
+      {/* no castShadow: shadow maps are on-demand, a waving shadow would freeze */}
+      <mesh geometry={flagGeometry} material={material} position={[0.018, 0.99, 0]} raycast={NO_RAYCAST} />
     </group>
   )
 }
+// eslint-disable-next-line react-refresh/only-export-components -- dev-only HMR granularity
+export { calmFlagMaterial }
 
 function faceCamera(group, camera, yaw = 0) {
   // ponytail: billboard before the FBO pass — default useFrame runs too late / onBeforeRender is unreliable here
@@ -217,19 +413,7 @@ function faceCamera(group, camera, yaw = 0) {
   group.updateMatrixWorld()
 }
 
-// Keep the floor grid flat, but yaw it against the camera azimuth so cells run
-// screen-straight (not iso diamonds).
-function alignGrid(grid, camera) {
-  if (!grid?.parent) return
-  grid.parent.updateWorldMatrix(true, false)
-  grid.parent.getWorldQuaternion(_parentQ)
-  _parentEuler.setFromQuaternion(_parentQ, 'YXZ')
-  // atan2(x,z) is the iso corner azimuth; negate so grid X aligns with screen-horizontal
-  grid.rotation.y = -Math.atan2(camera.position.x, camera.position.z) - _parentEuler.y
-  grid.updateMatrixWorld()
-}
-
-function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle = 0 }) {
+function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
   const hoverAmount = useRef(0)
   const preview = useRef(null)
   const pointLight = useRef(null)
@@ -243,7 +427,8 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
   const labelPanel = useRef(null)
   const labelMaterial = useRef(null)
 
-  useFrame(({ clock, camera }, rawDt) => {
+  useFrame(({ clock, camera, gl }, rawDt) => {
+    if (!sceneRendering('map')) return
     faceCamera(pinBillboard.current, camera, pinAngle)
 
     const dt = Math.min(rawDt, 0.05)
@@ -253,6 +438,9 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
       highlighted ? 9.5 : 7,
       dt,
     )
+    // the preview (a shadow caster) scales with hover; shadow maps are
+    // on-demand, so re-arm while the damp is still settling
+    if (Math.abs(hoverAmount.current - (highlighted ? 1 : 0)) > 0.001) gl.shadowMap.needsUpdate = true
     const hover = THREE.MathUtils.smoothstep(hoverAmount.current, 0, 1)
     const wave = Math.sin(clock.elapsedTime * 2.6)
     const pulseWave = (wave + 1) * 0.5
@@ -284,12 +472,12 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
   return (
     <group position={position}>
       <group ref={preview}>
-        {id === 'city' ? <CityPreview /> : <NorthPreview />}
+        {id === 'city' ? <CityPreview /> : id === 'annarbor' ? <MichiganFlag /> : <primitive object={northTreesMesh} />}
       </group>
       <pointLight
         ref={pointLight}
         position={[0, 1.45, 0]}
-        color={id === 'city' ? '#8fc5d2' : '#b8d69e'}
+        color={MARKER_COLORS[id].light}
         intensity={0}
         distance={3.8}
         decay={2}
@@ -311,7 +499,7 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
         <circleGeometry args={[1.55, 48]} />
         <meshBasicMaterial
           ref={areaGlowMaterial}
-          color={id === 'city' ? '#20606f' : '#42663a'}
+          color={MARKER_COLORS[id].glow}
           transparent
           opacity={0.018}
           depthWrite={false}
@@ -322,7 +510,7 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
         <ringGeometry args={[0.44, 0.49, 32]} />
         <meshBasicMaterial
           ref={pulseMaterial}
-          color={id === 'city' ? '#1d4d59' : '#3d5a36'}
+          color={MARKER_COLORS[id].pulse}
           transparent
           opacity={0.48}
           depthWrite={false}
@@ -333,8 +521,8 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
         <mesh geometry={pinGeometry} raycast={NO_RAYCAST}>
           <meshStandardMaterial
             ref={pinMaterial}
-            color={id === 'city' ? '#4d7580' : '#6f8b65'}
-            emissive={id === 'city' ? '#2e7381' : '#4e7040'}
+            color={MARKER_COLORS[id].pin}
+            emissive={MARKER_COLORS[id].pinEmissive}
             emissiveIntensity={0.06}
             roughness={0.58}
             metalness={0.02}
@@ -350,7 +538,7 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
         </mesh>
         <group ref={labelPanel} position={[0, 0.8, 0]}>
           <mesh position-z={0.025} raycast={NO_RAYCAST}>
-            <planeGeometry args={[1.48, 0.42]} />
+            <planeGeometry args={[1.26, 0.42]} />
             <meshBasicMaterial
               ref={labelMaterial}
               color="#f4f0e3"
@@ -369,7 +557,7 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
             material-toneMapped={false}
             raycast={NO_RAYCAST}
           >
-            {`${chapter}  ${label.toUpperCase()}`}
+            {label.toUpperCase()}
           </Text>
         </group>
       </group>
@@ -379,7 +567,6 @@ function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle
 
 export function MichiganHub({ onSelect, transition }) {
   const mapRoot = useRef(null)
-  const grid = useRef(null)
   const [hoveredRegion, setHoveredRegion] = useState(null)
   useCursor(Boolean(hoveredRegion))
 
@@ -397,9 +584,21 @@ export function MichiganHub({ onSelect, transition }) {
   })
   const mapTilt = new THREE.Quaternion().setFromAxisAngle(TILT_AXIS, tilt)
 
+  // transient writes to the module-singleton material — no re-render
+  useControls('water', {
+    deepBlue: {
+      value: '#91aece', label: 'deep',
+      onChange: (v) => { waterMaterial.uniforms.uWaterA.value.set(v) },
+    },
+    lightBlue: {
+      value: '#1d70b4', label: 'light',
+      onChange: (v) => { waterMaterial.uniforms.uWaterB.value.set(v) },
+    },
+  }, { collapsed: true })
+
   useFrame(() => {
     const root = mapRoot.current
-    if (!root) return
+    if (!root || !sceneRendering('map')) return
 
     const eased = transition.p * transition.p * (3 - 2 * transition.p)
     let destination = null
@@ -425,10 +624,6 @@ export function MichiganHub({ onSelect, transition }) {
     }
   })
 
-  useFrame(({ camera }) => {
-    alignGrid(grid.current, camera)
-  }, BEFORE_FBO)
-
   return (
     <>
       <color attach="background" args={['#d7ddd4']} />
@@ -447,63 +642,70 @@ export function MichiganHub({ onSelect, transition }) {
       />
 
       <group quaternion={mapTilt}>
-      <group ref={mapRoot}>
-        <mesh rotation-x={-Math.PI / 2} position-y={-0.12} material={waterMaterial} receiveShadow raycast={NO_RAYCAST}>
-          <planeGeometry args={[60, 60]} />
-        </mesh>
-        <gridHelper
-          ref={grid}
-          args={[60, 120, '#89978e', '#b2beb5']}
-          position-y={-0.105}
-          rotation-y={-Math.PI / 4}
-          material-transparent
-          material-opacity={0.2}
-          raycast={NO_RAYCAST}
-        />
-        <group rotation-y={angle}>
-        {landGeometries.map((geometry, index) => (
-          <group key={index}>
-            {/* land is scenery only — the markers are the sole click targets */}
-            <mesh geometry={geometry} material={landMaterials} castShadow receiveShadow raycast={NO_RAYCAST} />
-            <lineSegments geometry={landOutlines[index]} material={outlineMaterial} position-y={0.006} raycast={NO_RAYCAST} />
+        <group ref={mapRoot}>
+          <group rotation-y={angle}>
+            {/* inside the angle group so the baked shore mask stays aligned with the land */}
+            {/* 120² so its edges stay off-screen at the intro's pulled-back zoom on any
+            aspect; shader samples plane-local coords and the shore mask clamps to
+            open water, so size is free to grow */}
+            <mesh rotation-x={-Math.PI / 2} position-y={-0.12} material={waterMaterial} raycast={NO_RAYCAST}>
+              {/* segments only feed a 0.012-unit bob — 32² is visually identical to 96² */}
+              <planeGeometry args={[120, 120, 32, 32]} />
+            </mesh>
+            {landGeometries.map((geometry, index) => (
+              <group key={index}>
+                {/* land is scenery only — the markers are the sole click targets */}
+                <mesh geometry={geometry} material={landMaterials} castShadow receiveShadow raycast={NO_RAYCAST} />
+                <lineSegments geometry={landOutlines[index]} material={outlineMaterial} position-y={0.006} raycast={NO_RAYCAST} />
+              </group>
+            ))}
+
+            <primitive object={mapTreesMesh} />
+
+            <group
+              // markers live in the map portal but R3F's event raycast still
+              // hits them from inside a diorama (shared camera/event root), so
+              // gate on the map being the current destination — you have to go
+              // back to the map to pick a new scene
+              onClick={(event) => {
+                event.stopPropagation()
+                if (transition.to !== 'map') return
+                onSelect(event.object.userData.destination)
+              }}
+              onPointerMove={(event) => {
+                event.stopPropagation()
+                if (transition.to !== 'map') return
+                setHoveredRegion(event.object.userData.destination)
+              }}
+              onPointerLeave={(event) => {
+                event.stopPropagation()
+                setHoveredRegion(null)
+              }}
+            >
+              <DestinationMarker
+                id="city"
+                label="Detroit"
+                position={DESTINATION_POSITIONS.city}
+                highlighted={hoveredRegion === 'city'}
+                pinAngle={pinAngle}
+              />
+              <DestinationMarker
+                id="meadow"
+                label="Up North"
+                position={DESTINATION_POSITIONS.meadow}
+                highlighted={hoveredRegion === 'meadow'}
+                pinAngle={pinAngle}
+              />
+              <DestinationMarker
+                id="annarbor"
+                label="Ann Arbor"
+                position={DESTINATION_POSITIONS.annarbor}
+                highlighted={hoveredRegion === 'annarbor'}
+                pinAngle={pinAngle}
+              />
+            </group>
           </group>
-        ))}
-
-        <MapTrees />
-
-        <group
-          onClick={(event) => {
-            event.stopPropagation()
-            onSelect(event.object.userData.destination)
-          }}
-          onPointerMove={(event) => {
-            event.stopPropagation()
-            setHoveredRegion(event.object.userData.destination)
-          }}
-          onPointerLeave={(event) => {
-            event.stopPropagation()
-            setHoveredRegion(null)
-          }}
-        >
-          <DestinationMarker
-            id="city"
-            chapter="01"
-            label="Detroit"
-            position={DESTINATION_POSITIONS.city}
-            highlighted={hoveredRegion === 'city'}
-            pinAngle={pinAngle}
-          />
-          <DestinationMarker
-            id="meadow"
-            chapter="02"
-            label="Up North"
-            position={DESTINATION_POSITIONS.meadow}
-            highlighted={hoveredRegion === 'meadow'}
-            pinAngle={pinAngle}
-          />
         </group>
-        </group>
-      </group>
       </group>
     </>
   )

@@ -8,9 +8,10 @@ const FIELD_HALF = (GRID * TILE) / 2
 const TARGET = [0, -1.0, -0.4]
 const POSITION = [12.5, 11, 12.5]
 
-// intro dolly: pulled back from the resting zoom, quick zoom-only push in
-const INTRO_SECONDS = 1.1
-const ZOOM_OFF = 0.55
+// intro dolly: pulled well back from the resting zoom, slow cinematic push
+// through the parting cloud deck — a straight dolly, no orbital drift
+const INTRO_SECONDS = 2.4
+const ZOOM_OFF = 0.5
 const MOUSE_YAW = 0.035 // radians of parallax sway at the screen edge
 const MIN_ZOOM_SCALE = 0.78
 const DEFAULT_ZOOM_SCALE = MIN_ZOOM_SCALE
@@ -91,7 +92,9 @@ export function Camera({ scene }) {
     if (!d) return
     // clamp dt so the post-load compile hitch can't fast-forward the dolly
     d.p = Math.min(d.p + Math.min(rawDt, 0.05) / INTRO_SECONDS, 1)
-    const e = 1 - (1 - d.p) ** 3 // easeOutCubic: moving from frame one reads as a quick push
+    // easeInOutCubic: the slow start hides under the cloud deck, the settle
+    // lands with the last of the blanket burning off
+    const e = d.p < 0.5 ? 4 * d.p ** 3 : 1 - (-2 * d.p + 2) ** 3 / 2
     controls.current.zoomTo(defaultZoom * (ZOOM_OFF + (1 - ZOOM_OFF) * e), false)
     if (d.p >= 1) {
       dolly.current = null
@@ -130,7 +133,9 @@ export function Camera({ scene }) {
           makeDefault
           position={POSITION}
           zoom={defaultZoom}
-          near={0.1}
+          // negative near (legal for ortho) — at the intro's pulled-back zoom the
+          // near plane at 0.1 sliced the map water in the lower half of the frame
+          near={-50}
           far={100}
           onUpdate={(camera) => camera.lookAt(...TARGET)}
         />
@@ -143,7 +148,7 @@ export function Camera({ scene }) {
         azimuthRotateSpeed={0.65}
         polarRotateSpeed={0.65}
         dollySpeed={0.7}
-        minZoom={zoom * (intro ? 0.4 : MIN_ZOOM_SCALE)}
+        minZoom={zoom * (intro ? 0.35 : MIN_ZOOM_SCALE)}
         maxZoom={zoom * 1.28}
         minPolarAngle={0.9}
         maxPolarAngle={1.05}

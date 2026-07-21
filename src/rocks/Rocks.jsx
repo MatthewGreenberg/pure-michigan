@@ -1,8 +1,10 @@
 import { useEffect } from 'react'
+import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useControls, button, folder } from 'leva'
 import { GRID, TILE } from '../grass/constants.js'
 import { COAST_EDGE } from '../coast.js'
+import { armShadows } from '../shadows.js'
 import { stampRockMask, overlapsScenery } from './rockMask.js'
 
 const MAX_ROCKS = 80
@@ -189,6 +191,7 @@ function scatter({ count, size, variation, squash, spread, grouping, rockColor, 
 }
 
 export function Rocks() {
+  const gl = useThree((s) => s.gl)
   const { count, size, variation, jaggedness, squash, spread, grouping, rockColor, rockColorB, gradient } = useControls('rocks', {
     count: { value: 0, min: 0, max: MAX_ROCKS, step: 1 },
     size: { value: 0.34, min: 0.1, max: 2, step: 0.01 },
@@ -219,13 +222,15 @@ export function Rocks() {
         rockColorB: get('rocks.rockColorB'),
         gradient: get('rocks.gradient'),
       })
+      armShadows(gl) // rocks moved — refresh the on-demand shadow map
     }),
   })
 
   useEffect(() => {
     reshape(jaggedness)
     scatter({ count, size, variation, squash, spread, grouping, rockColor, rockColorB, gradient })
-  }, [count, size, variation, jaggedness, squash, spread, grouping, rockColor, rockColorB, gradient])
+    armShadows(gl) // rocks moved — refresh the on-demand shadow map
+  }, [count, size, variation, jaggedness, squash, spread, grouping, rockColor, rockColorB, gradient, gl])
 
   return (
     <group>

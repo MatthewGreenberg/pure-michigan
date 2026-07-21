@@ -1,34 +1,29 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas, createPortal, useFrame } from '@react-three/fiber'
+import { Canvas, createPortal, useFrame, useThree } from '@react-three/fiber'
 import { ScreenQuad, useFBO } from '@react-three/drei'
 import * as THREE from 'three'
 import { Leva, useControls } from 'leva'
+import { AnnArbor } from './AnnArbor.jsx'
 import { Birds } from './Birds.jsx'
 import { Camera } from './Camera.jsx'
 import { City } from './city/City.jsx'
 import { CloudCover, CloudSheet } from './CloudCover.jsx'
 import { Grass } from './grass/Grass.jsx'
 import { MichiganHub, hoverHubDestination } from './MichiganHub.jsx'
-import { MittenLoader } from './MittenLoader.jsx'
+import { MittenLoader, MITTEN_PATH, UP_PATH, MICHIGAN_VIEWBOX } from './MittenLoader.jsx'
 import { Rocks } from './rocks/Rocks.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
 import { SoilBlock } from './SoilBlock.jsx'
 import { Sky } from './Sky.jsx'
+import { START_SCENE, hubTransition } from './sceneState.js'
+import { initOnDemandShadows } from './shadows.js'
 import { skyMaterial, skyUniforms } from './skyMaterial.js'
 import { StylePass } from './StyleEffect.jsx'
 import { groundMaterial } from './grass/material.js'
 import { GRID, TILE } from './grass/constants.js'
 
 const TRANSITION_SECONDS = 1.6
-
-// The map is the front door; scene hashes remain useful for direct links.
-const START_SCENE = typeof window === 'undefined'
-  ? 'map'
-  : window.location.hash === '#city' || window.location.hash === '#meadow'
-    ? window.location.hash.slice(1)
-    : 'map'
-const hubTransition = { from: START_SCENE, to: START_SCENE, p: 1 }
 
 // Detroit's steely sky lives on its own material clone — each scene renders
 // its own sky into its own target, so no palette crossfade bookkeeping.
@@ -37,6 +32,13 @@ citySkyMaterial.uniforms.uSkyTop.value.set('#fafcff')
 citySkyMaterial.uniforms.uSkyMiddle.value.set('#90aeb2')
 citySkyMaterial.uniforms.uSkyBottom.value.set('#cfc3a9')
 citySkyMaterial.uniforms.uHorizonGlow.value.set('#ffffff')
+
+// Ann Arbor: soft autumn-campus sky, maize-warm horizon.
+const annarborSkyMaterial = skyMaterial.clone()
+annarborSkyMaterial.uniforms.uSkyTop.value.set('#ffffff')
+annarborSkyMaterial.uniforms.uSkyMiddle.value.set('#a9bdc4')
+annarborSkyMaterial.uniforms.uSkyBottom.value.set('#e9dcae')
+annarborSkyMaterial.uniforms.uHorizonGlow.value.set('#fff3c9')
 
 // Fullscreen compositor: the default scene contains only this quad, which
 // mixes whichever two scene targets are transitioning. StylePass grades the
@@ -135,14 +137,26 @@ function Scenes({ activeScene, onSelect, children }) {
   const mapScene = useMemo(() => new THREE.Scene(), [])
   const grassScene = useMemo(() => new THREE.Scene(), [])
   const cityScene = useMemo(() => new THREE.Scene(), [])
-  const mapFBO = useFBO({ samples: 4 })
-  const grassFBO = useFBO({ samples: 4 })
-  const cityFBO = useFBO({ samples: 4 })
+  const annarborScene = useMemo(() => new THREE.Scene(), [])
+  // Two shared targets, not one per scene: only the outgoing/incoming pair
+  // ever blends, so new destinations cost zero extra VRAM.
+  const outgoingFBO = useFBO({ samples: 4 })
+  const residentFBO = useFBO({ samples: 4 })
   const fromScene = useRef(START_SCENE)
   const toScene = useRef(START_SCENE)
   const p = useRef(1)
   const grassRoot = useRef(null)
   const cityRoot = useRef(null)
+  const annarborRoot = useRef(null)
+  const gl = useThree((s) => s.gl)
+
+  // Every shadow caster is static outside transitions (map dive) and marker
+  // hover, so shadow maps render on demand — the flag sites re-arm it.
+  // Renders of scenes with no shadow lights (city, blend quad) don't consume
+  // the flag, so it survives until a shadowed scene draws.
+  useEffect(() => {
+    initOnDemandShadows(gl)
+  }, [gl])
 
   useEffect(() => {
     if (activeScene === toScene.current) return
@@ -160,13 +174,16 @@ function Scenes({ activeScene, onSelect, children }) {
     hubTransition.p = p.current
     const eased = THREE.MathUtils.smoothstep(p.current, 0, 1)
     blendMaterial.uniforms.uMix.value = eased
+    // captured before the completion reset so the settle frame (p just hit 1,
+    // roots at rest pose) still gets one final shadow refresh
+    const animating = fromScene.current !== toScene.current
     if (p.current >= 1) fromScene.current = toScene.current
 
     // Diorama zoom: incoming scene dollies up to full scale, outgoing recedes.
     // Uniform scale about the origin under the ortho camera reads as a zoom;
     // the sky ScreenQuads sit outside these roots so they stay fullscreen.
     const transitioning = fromScene.current !== toScene.current
-    for (const [name, root] of [['meadow', grassRoot], ['city', cityRoot]]) {
+    for (const [name, root] of [['meadow', grassRoot], ['city', cityRoot], ['annarbor', annarborRoot]]) {
       if (!root.current) continue
       let s = 1
       if (transitioning && name === toScene.current) s = THREE.MathUtils.lerp(0.55, 1, eased)
@@ -174,26 +191,24 @@ function Scenes({ activeScene, onSelect, children }) {
       root.current.scale.setScalar(s)
     }
 
-    const scenes = {
-      map: [mapScene, mapFBO],
-      meadow: [grassScene, grassFBO],
-      city: [cityScene, cityFBO],
-    }
-    const required = fromScene.current === toScene.current
-      ? [toScene.current]
-      : [fromScene.current, toScene.current]
+    const scenes = { map: mapScene, meadow: grassScene, city: cityScene, annarbor: annarborScene }
 
-    // The composer leaves gl.autoClear=false. Render only the active pair so
-    // the hub adds no permanent third-scene cost once a diorama is open.
-    for (const name of required) {
-      const [scene, target] = scenes[name]
-      gl.setRenderTarget(target)
+    // The composer leaves gl.autoClear=false. Outgoing scene → outgoingFBO
+    // (skipped entirely when resident), incoming/resident scene → residentFBO.
+    if (transitioning) {
+      gl.shadowMap.needsUpdate = true
+      gl.setRenderTarget(outgoingFBO)
       gl.clear()
-      gl.render(scene, camera)
+      gl.render(scenes[fromScene.current], camera)
     }
+    // re-arm per render: a shadowed scene's render consumes the flag
+    if (animating) gl.shadowMap.needsUpdate = true
+    gl.setRenderTarget(residentFBO)
+    gl.clear()
+    gl.render(scenes[toScene.current], camera)
 
-    blendMaterial.uniforms.tFrom.value = scenes[fromScene.current][1].texture
-    blendMaterial.uniforms.tTo.value = scenes[toScene.current][1].texture
+    blendMaterial.uniforms.tFrom.value = (transitioning ? outgoingFBO : residentFBO).texture
+    blendMaterial.uniforms.tTo.value = residentFBO.texture
     gl.setRenderTarget(null)
   }, 0.5)
 
@@ -202,7 +217,7 @@ function Scenes({ activeScene, onSelect, children }) {
       {createPortal(
         <>
           <MichiganHub onSelect={onSelect} transition={hubTransition} />
-          <CloudCover transition={hubTransition} />
+          <CloudCover />
         </>,
         mapScene,
         { events: { compute: computePortalPointer } }
@@ -227,22 +242,26 @@ function Scenes({ activeScene, onSelect, children }) {
         </>,
         cityScene
       )}
+      {createPortal(
+        <>
+          <ScreenQuad material={annarborSkyMaterial} renderOrder={-10000} raycast={NO_RAYCAST} />
+          <group ref={annarborRoot}>
+            <AnnArbor />
+            {/* same steel stratus singleton as Detroit — shared material + leva folder */}
+            <CloudSheet tint="steel" altitude={6.6} />
+          </group>
+        </>,
+        annarborScene
+      )}
       <ScreenQuad material={blendMaterial} raycast={NO_RAYCAST} />
     </>
   )
 }
 
 const LOCATIONS = [
-  {
-    id: 'city',
-    chapter: '01',
-    name: 'Detroit',
-  },
-  {
-    id: 'meadow',
-    chapter: '02',
-    name: 'Up North',
-  },
+  { id: 'city', name: 'Detroit' },
+  { id: 'meadow', name: 'Up North' },
+  { id: 'annarbor', name: 'Ann Arbor' },
 ]
 
 function MapPinIcon() {
@@ -262,13 +281,24 @@ function Hud({ activeScene, onSelect }) {
 
   return (
     <div className="hud" data-location={active?.id || 'map'}>
+      <button
+        className="hud-michigan"
+        type="button"
+        aria-label="Back to map"
+        disabled={onMap}
+        onClick={() => onSelect('map')}
+      >
+        <svg viewBox={MICHIGAN_VIEWBOX} overflow="visible" aria-hidden="true">
+          <path d={UP_PATH} />
+          <path d={MITTEN_PATH} />
+        </svg>
+      </button>
       <div className={`hud-island${onMap ? ' is-map' : ' is-scene'}`}>
         <nav
           className="hud-island-map"
           aria-label="Michigan destinations"
           aria-hidden={!onMap}
         >
-          <span className="hud-island-brand">MI <small>Field atlas</small></span>
           {LOCATIONS.map((location) => {
             return (
               <button
@@ -284,10 +314,7 @@ function Hud({ activeScene, onSelect }) {
                 tabIndex={onMap ? 0 : -1}
               >
                 <MapPinIcon />
-                <span className="hud-island-destination-copy">
-                  {location.name}
-                  <small>Stop {location.chapter}</small>
-                </span>
+                {location.name}
               </button>
             )
           })}
@@ -330,7 +357,9 @@ export default function App() {
   return (
     <main className="scene">
       <Leva collapsed />
-      <Canvas shadows dpr={[1, 2]} gl={{ antialias: true, alpha: false }}>
+      {/* antialias off: only fullscreen quads hit the canvas — the scene AA
+          is the samples:4 on the two FBOs in Scenes */}
+      <Canvas shadows dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }}>
         <Suspense fallback={null}>
           <Camera scene={activeScene} />
           <Scenes activeScene={activeScene} onSelect={setActiveScene}>

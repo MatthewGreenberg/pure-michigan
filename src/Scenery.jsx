@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { stampSceneryMask } from './rocks/rockMask.js'
+import { sceneRendering } from './sceneState.js'
 
 // Static set dressing: a gabled cottage above the dune and a lounging scene
 // on the sand. All primitives/extrudes + procedural Lambert materials, lit by
@@ -325,6 +326,7 @@ const PUFFS = 4
 function Smoke() {
   const puffs = useRef([])
   useFrame(({ clock }) => {
+    if (!sceneRendering('meadow')) return
     const t = clock.getElapsedTime()
     for (let i = 0; i < PUFFS; i++) {
       const m = puffs.current[i]
@@ -467,6 +469,7 @@ function Loungers() {
   const sitHead = useRef()
   // ponytail: sine idle on refs, no animation system
   useFrame(({ clock }) => {
+    if (!sceneRendering('meadow')) return
     const t = clock.getElapsedTime()
     const breath = Math.sin(t * 1.3)
     if (lyingChest.current) {

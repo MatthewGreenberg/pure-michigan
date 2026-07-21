@@ -10,7 +10,7 @@ export const GRASS_DEFAULTS = Object.freeze({
   sheen: 2,
   clump: 0,
   clumpScale: 1.6,
-  blades: 66_800,
+  blades: 31_200,
   bladeHeight: 0.56,
   bladeWidth: 0.04,
   bladeTipWidth: 0,

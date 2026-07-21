@@ -53,448 +53,47 @@ button {
   --hud-accent: #a85b4f;
 }
 
-.hud-topbar {
+.hud-michigan {
   position: absolute;
   top: 18px;
-  right: 78px;
   left: 18px;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  min-height: 54px;
-  padding: 0 16px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 4px;
-  background: rgba(244, 242, 233, 0.7);
-  box-shadow: 0 10px 32px rgba(29, 40, 38, 0.08);
-  backdrop-filter: blur(12px) saturate(0.8);
-  -webkit-backdrop-filter: blur(12px) saturate(0.8);
-}
-
-.hud-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.hud-brand-mark {
-  display: grid;
   place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  background: rgba(244, 242, 233, 0.86);
+  box-shadow: 0 8px 24px rgba(29, 40, 38, 0.14), inset 0 1px rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(16px) saturate(0.8);
+  -webkit-backdrop-filter: blur(16px) saturate(0.8);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.hud-michigan:disabled {
+  cursor: default;
+}
+
+.hud-michigan:focus-visible {
+  outline: 2px solid var(--hud-accent);
+  outline-offset: 3px;
+}
+
+.hud-michigan svg {
   width: 28px;
   height: 28px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
 }
 
-.hud-brand-name {
-  display: flex;
-  flex-direction: column;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.hud-brand-name small {
-  margin-top: 4px;
-  font-family: Inter, ui-sans-serif, sans-serif;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.hud-current {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  color: rgba(23, 33, 30, 0.66);
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.hud-current span {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--hud-accent);
-  color: #f8f5eb;
-  font-size: 8px;
-}
-
-.hud-status {
-  display: flex;
-  justify-self: end;
-  align-items: center;
-  gap: 7px;
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.hud-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--hud-accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hud-accent) 18%, transparent);
-}
-
-.hud-map {
-  position: absolute;
-  top: 92px;
-  right: 34px;
-  width: 238px;
-  padding: 16px 14px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 4px;
-  background: rgba(244, 242, 233, 0.72);
-  box-shadow: 0 16px 40px rgba(29, 40, 38, 0.1);
-  backdrop-filter: blur(12px) saturate(0.8);
-  -webkit-backdrop-filter: blur(12px) saturate(0.8);
-  pointer-events: auto;
-}
-
-.hud-map-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 3px 12px;
-  border-bottom: 1px solid var(--hud-line);
-}
-
-.hud-map-heading p,
-.hud-map-heading span {
-  margin: 0;
-  text-transform: uppercase;
-}
-
-.hud-map-heading p {
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-
-.hud-map-heading span {
-  color: rgba(23, 33, 30, 0.48);
-  font-size: 7px;
-  font-weight: 750;
-  letter-spacing: 0.12em;
-}
-
-.hud-map-plot {
-  position: relative;
-  height: 236px;
-}
-
-.hud-map-plot svg {
-  position: absolute;
-  top: 5px;
-  left: 7px;
-  width: 212px;
-  height: 228px;
-  overflow: visible;
-}
-
-.hud-map-shape {
-  fill: color-mix(in srgb, var(--hud-accent) 12%, rgba(244, 242, 233, 0.8));
-  stroke: rgba(23, 33, 30, 0.62);
-  stroke-linecap: round;
+.hud-michigan path {
+  fill: var(--hud-accent);
+  stroke: rgba(23, 33, 30, 0.5);
+  stroke-width: 1.5;
   stroke-linejoin: round;
-  stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
   transition: fill 500ms ease;
 }
-
-.hud-map-stop {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 4px 9px 4px 5px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(248, 245, 235, 0.9);
-  color: rgba(23, 33, 30, 0.56);
-  box-shadow: 0 4px 12px rgba(23, 33, 30, 0.1);
-  cursor: pointer;
-  transition: color 180ms ease, background 180ms ease, transform 180ms ease;
-}
-
-.hud-map-stop-meadow {
-  top: 96px;
-  left: 120px;
-}
-
-.hud-map-stop-city {
-  top: 190px;
-  left: 105px;
-  flex-direction: row-reverse;
-}
-
-.hud-map-stop:hover {
-  color: #17211e;
-  background: #ffffff;
-  transform: translateY(-1px);
-}
-
-.hud-map-stop:focus-visible {
-  outline: 2px solid var(--hud-accent);
-  outline-offset: 3px;
-}
-
-.hud-map-pin {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  flex: 0 0 auto;
-  border: 1px solid rgba(23, 33, 30, 0.3);
-  border-radius: 50% 50% 50% 0;
-  background: #f8f5eb;
-  transform: rotate(-45deg);
-  transition: background 180ms ease, border-color 180ms ease;
-}
-
-.hud-map-pin i {
-  font-size: 8px;
-  font-style: normal;
-  font-weight: 800;
-  transform: rotate(45deg);
-}
-
-.hud-map-label {
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.hud-map-stop.active {
-  background: #17211e;
-  color: #f8f5eb;
-}
-
-.hud-map-stop.active .hud-map-pin {
-  border-color: var(--hud-accent);
-  background: var(--hud-accent);
-}
-
-.hud-map-stop.active .hud-map-pin::after {
-  position: absolute;
-  inset: -5px;
-  border: 1px solid var(--hud-accent);
-  border-radius: 50%;
-  content: "";
-  animation: hud-map-pulse 2.2s ease-out infinite;
-}
-
-@keyframes hud-map-pulse {
-  0% { opacity: 0.75; transform: scale(0.7); }
-  70%, 100% { opacity: 0; transform: scale(1.3); }
-}
-
-.hud-map-credit {
-  margin: 2px 3px 0;
-  color: rgba(23, 33, 30, 0.38);
-  font-size: 6px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.hud-map-credit a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.hud-map-credit a:hover,
-.hud-map-credit a:focus-visible {
-  color: #17211e;
-  text-decoration: underline;
-}
-
-.hud-destinations {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 999px;
-  background: rgba(244, 242, 233, 0.72);
-  box-shadow: 0 16px 40px rgba(29, 40, 38, 0.1);
-  backdrop-filter: blur(12px) saturate(0.8);
-  -webkit-backdrop-filter: blur(12px) saturate(0.8);
-  pointer-events: auto;
-  transform: translateX(-50%);
-}
-
-.hud-destinations p {
-  margin: 0 8px 0 10px;
-  color: rgba(23, 33, 30, 0.5);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.hud-destination {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 36px;
-  padding: 0 13px 0 7px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(248, 245, 235, 0.94);
-  color: #26312d;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
-}
-
-.hud-destination span {
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 50%;
-  background: rgba(23, 33, 30, 0.1);
-  font-size: 8px;
-}
-
-.hud-destination:hover {
-  background: #17211e;
-  color: #f8f5eb;
-  box-shadow: 0 6px 16px rgba(23, 33, 30, 0.16);
-  transform: translateY(-1px);
-}
-
-.hud-destination:hover span {
-  background: var(--hud-accent);
-}
-
-.hud-destination:focus-visible,
-.hud-back:focus-visible {
-  outline: 2px solid var(--hud-accent);
-  outline-offset: 3px;
-}
-
-.hud-back {
-  position: absolute;
-  top: 92px;
-  left: 34px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 38px;
-  padding: 0 14px 0 9px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 999px;
-  background: rgba(244, 242, 233, 0.78);
-  color: #26312d;
-  box-shadow: 0 8px 22px rgba(29, 40, 38, 0.1);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.hud-back span {
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 50%;
-  background: var(--hud-accent);
-  color: #f8f5eb;
-  font-size: 13px;
-}
-
-.hud-footer {
-  position: absolute;
-  right: 34px;
-  bottom: 24px;
-  left: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: rgba(23, 33, 30, 0.66);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-}
-
-.hud-footer p {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-}
-
-.hud-drag-icon {
-  display: inline-block;
-  width: 14px;
-  height: 19px;
-  border: 1px solid currentColor;
-  border-radius: 8px;
-}
-
-.hud-drag-icon::before {
-  display: block;
-  width: 2px;
-  height: 4px;
-  margin: 4px auto 0;
-  border-radius: 2px;
-  background: currentColor;
-  content: "";
-}
-
-.hud-progress strong {
-  color: #17211e;
-  font-size: 16px;
-}
-
-.hud-atlas-label {
-  color: rgba(23, 33, 30, 0.56);
-}
-
-.hud-corners span {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-color: rgba(23, 33, 30, 0.38);
-  border-style: solid;
-}
-
-.hud-corners span:nth-child(1) { top: 88px; left: 18px; border-width: 1px 0 0 1px; }
-.hud-corners span:nth-child(2) { top: 88px; right: 18px; border-width: 1px 1px 0 0; }
-.hud-corners span:nth-child(3) { right: 18px; bottom: 18px; border-width: 0 1px 1px 0; }
-.hud-corners span:nth-child(4) { bottom: 18px; left: 18px; border-width: 0 0 1px 1px; }
 
 .mitten-loader {
   position: absolute;
@@ -529,109 +128,6 @@ button {
   letter-spacing: 0.2em;
 }
 
-@media (max-width: 720px) {
-  .hud-topbar {
-    right: 60px;
-    grid-template-columns: auto 1fr;
-    min-height: 50px;
-    padding: 0 10px;
-  }
-
-  .hud-brand-name,
-  .hud-status {
-    display: none;
-  }
-
-  .hud-current {
-    justify-self: end;
-    font-size: 8px;
-    letter-spacing: 0.09em;
-  }
-
-  .hud-destinations {
-    bottom: 16px;
-    gap: 5px;
-    padding: 5px;
-  }
-
-  .hud-destinations p {
-    display: none;
-  }
-
-  .hud-destination {
-    min-height: 34px;
-    padding-right: 10px;
-    letter-spacing: 0.07em;
-  }
-
-  .hud-back {
-    top: 82px;
-    left: 18px;
-  }
-
-  .hud-map {
-    top: 82px;
-    right: 18px;
-    width: 196px;
-    padding: 12px 10px 8px;
-  }
-
-  .hud-map-heading span {
-    display: none;
-  }
-
-  .hud-map-plot {
-    height: 200px;
-  }
-
-  .hud-map-plot svg {
-    left: 4px;
-    width: 174px;
-    height: 187px;
-  }
-
-  .hud-map-stop-meadow {
-    top: 80px;
-    left: 98px;
-  }
-
-  .hud-map-stop-city {
-    top: 155px;
-    left: 76px;
-  }
-
-  .hud-footer {
-    right: 18px;
-    bottom: 18px;
-    left: auto;
-  }
-
-  .hud-footer > p:first-child {
-    display: none;
-  }
-}
-
-@media (max-height: 580px) {
-  .hud-destinations {
-    bottom: 14px;
-  }
-
-  .hud-map {
-    transform: scale(0.82);
-    transform-origin: top right;
-  }
-
-  .hud-footer {
-    display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hud-map-stop.active .hud-map-pin::after {
-    animation: none;
-  }
-}
-
 .hud-island {
   position: absolute;
   bottom: 22px;
@@ -652,7 +148,7 @@ button {
 }
 
 .hud-island.is-map {
-  width: 408px;
+  width: 384px;
   height: 58px;
 }
 
@@ -676,35 +172,15 @@ button {
   padding: 6px;
 }
 
-.hud-island-brand {
-  display: flex;
-  flex: 1 0 90px;
-  align-items: center;
-  gap: 7px;
-  padding-left: 10px;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 13px;
-}
-
-.hud-island-brand small {
-  color: rgba(23, 33, 30, 0.48);
-  font-family: Inter, ui-sans-serif, sans-serif;
-  font-size: 7px;
-  font-weight: 750;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .hud-island-destination {
   --destination-accent: #a85b4f;
   display: flex;
   flex: 1 1 0;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 8px;
   height: 46px;
-  padding: 0 12px 0 8px;
+  padding: 0 10px;
   border: 0;
   border-radius: 999px;
   background: rgba(23, 33, 30, 0.065);
@@ -728,6 +204,10 @@ button {
 
 .hud-island-destination[data-destination="meadow"] {
   --destination-accent: #6f8b65;
+}
+
+.hud-island-destination[data-destination="annarbor"] {
+  --destination-accent: #b08b00;
 }
 
 .hud-island-pin {
@@ -768,22 +248,6 @@ button {
   transition: fill 260ms ease, transform 320ms cubic-bezier(0.2, 0.9, 0.2, 1.2);
 }
 
-.hud-island-destination-copy {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1;
-}
-
-.hud-island-destination-copy small {
-  margin-top: 4px;
-  color: rgba(23, 33, 30, 0.46);
-  font-size: 6px;
-  font-weight: 750;
-  letter-spacing: 0.12em;
-  transition: color 260ms ease, transform 320ms cubic-bezier(0.22, 0.8, 0.2, 1);
-}
-
 .hud-island-destination:is(:hover, :focus-visible) {
   background: #17211e;
   color: #f8f5eb;
@@ -805,11 +269,6 @@ button {
 .hud-island-destination:is(:hover, :focus-visible) .hud-island-pin circle {
   fill: #ffffff;
   transform: scale(1.16);
-}
-
-.hud-island-destination:is(:hover, :focus-visible) .hud-island-destination-copy small {
-  color: rgba(248, 245, 235, 0.64);
-  transform: translateX(1px);
 }
 
 .hud-island-back {
@@ -881,18 +340,9 @@ button {
     width: calc(100vw - 24px);
   }
 
-  .hud-island-brand {
-    flex-basis: 30px;
-    padding-left: 7px;
-  }
-
-  .hud-island-brand small {
-    display: none;
-  }
-
   .hud-island-destination {
     gap: 5px;
-    padding-right: 7px;
+    padding: 0 7px;
     letter-spacing: 0.05em;
   }
 }
@@ -904,8 +354,7 @@ button {
   .hud-island-destination,
   .hud-island-pin,
   .hud-island-pin path,
-  .hud-island-pin circle,
-  .hud-island-destination-copy small {
+  .hud-island-pin circle {
     transition-duration: 0.01ms;
   }
 }

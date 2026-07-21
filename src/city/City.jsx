@@ -4,33 +4,104 @@ import { useGLTF } from '@react-three/drei'
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js'
 import * as THREE from 'three'
 import { uniforms as grassUniforms } from '../grass/material.js'
+import { sceneRendering } from '../sceneState.js'
 import { CityBase } from './CityBase.jsx'
+import { makePeople, People } from './People.jsx'
 
 // The whole downtown Detroit diorama is one GLB
 // (Tripo buildings + baked ground/river/roads/park, Draco + KTX2 compressed).
 // Authored 30x30 with ground at y=0, so scale 0.5 fits the 15x15 slab.
-// Lighting is baked into the textures — everything renders unlit.
+// Lighting is baked into the textures — everything renders unlit
+// (KHR_materials_unlit). The river is baked teal into the ground/site
+// atlas — no separate water mesh — so patchBakedWater color-keys it.
 
-// Animated Detroit River — replaces the GLB's flat Detroit_River_Blue
-// material. Deliberately calmer than src/Ocean.jsx: dark steely blue with
-// multi-scale drifting ripple — no crests/sheen/glint/sparkles.
-// Shares the grass scene's uTime uniform object, so Grass's existing frame
-// loop drives it — no useFrame here.
-const riverMaterial = new THREE.ShaderMaterial({
-  uniforms: {
-    uTime: grassUniforms.uTime,
-  },
+// Shared with AnnArbor.jsx: color-key teal water texels in an unlit baked
+// atlas and remap them through a drifting multi-scale ripple (plus a soft
+// lapping wash on the mask ramp at the banks). Rides the shared grass
+// uTime. Guards StrictMode/HMR re-traverse via userData.water.
+// eslint-disable-next-line react-refresh/only-export-components -- shared water patch
+export function patchBakedWater(mat) {
+  if (mat.userData.water) return
+  mat.userData.water = true
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = grassUniforms.uTime
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(position, 1.0)).xyz;'
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        uniform float uTime;
+        varying vec3 vWPos;
+        float waterHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float waterNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(waterHash(i), waterHash(i + vec2(1.0, 0.0)), f.x),
+            mix(waterHash(i + vec2(0.0, 1.0)), waterHash(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }`
+      )
+      .replace(
+        '#include <map_fragment>',
+        /* glsl */ `#include <map_fragment>
+        {
+          vec3 wc = diffuseColor.rgb;
+          // teal mask: fades in as blue pulls ahead of red; grass/roads never trip it
+          float wMask = smoothstep(0.04, 0.22, wc.b - wc.r);
+          if (wMask > 0.001) {
+            float t = uTime;
+            vec2 p = vWPos.xz * 2.0; // GLB mounts at 0.5 — keep authored feature size
+            vec2 flow = vec2(0.7071, -0.7071);
+            float rip = waterNoise(p * 0.9 + flow * t * 0.22)
+              + 0.55 * waterNoise(p * 2.1 - flow * t * 0.18)
+              + 0.3 * waterNoise(p * 4.2 + flow.yx * t * 0.3);
+            rip = smoothstep(0.2, 0.8, rip / 1.85);
+            vec3 deep = wc * vec3(0.5, 0.72, 0.85);
+            vec3 lit = min(wc * 1.22 + vec3(0.0, 0.03, 0.06), vec3(1.0));
+            vec3 water = mix(deep, lit, rip);
+            float shore = smoothstep(0.1, 0.5, wMask) * (1.0 - smoothstep(0.6, 0.95, wMask));
+            water += shore * 0.14 * (0.5 + 0.5 * sin(t * 1.3 + waterNoise(p * 1.3) * 6.283));
+            diffuseColor.rgb = mix(wc, water, wMask);
+          }
+        }`
+      )
+  }
+  mat.needsUpdate = true
+}
+// Comerica's playing field re-drawn procedurally — the baked field texels are
+// covered in crack/seam artifacts, so an opaque shader ellipse hovers just
+// above the baked surface (field level measured from the decoded stadium
+// mesh: local y≈-0.230 × node scale 5.0693 + translation 1.522 → authored
+// 0.356) and repaints the whole field: mow-stripe arcs, dirt basepath
+// diamond, mound/home circles, bases, foul lines, warning track, edge
+// vignette. The ellipse is sized past the flat field disc so its rim tucks
+// under the rising stands; the diamond points at the +x+z corner (home plate
+// toward the camera-side entrance, matching the baked layout). Static —
+// no time uniform, unlit like the rest of the baked city.
+// ponytail: field geometry constants tuned by eye against the baked diamond, not surveyed
+const FIELD_CENTER = [-7.444, 0.416, -5.334] // authored coords, +0.06 lift over the bake (0.036 still z-fought)
+const FIELD_RADII = [2.9, 2.48]
+const ballfieldMaterial = new THREE.ShaderMaterial({
   vertexShader: /* glsl */ `
-    varying vec3 vPos;
+    varying vec2 vP; // unit-disc coords
+    varying vec2 vF; // authored-plane offset from field center (x, z)
     void main() {
-      vec4 wp = modelMatrix * vec4(position, 1.0);
-      vPos = wp.xyz;
-      gl_Position = projectionMatrix * viewMatrix * wp;
+      vP = position.xy;
+      vF = vec2(position.x * ${FIELD_RADII[0]}, -position.y * ${FIELD_RADII[1]});
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
   `,
   fragmentShader: /* glsl */ `
-    uniform float uTime;
-    varying vec3 vPos;
+    varying vec2 vP;
+    varying vec2 vF;
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -47,72 +118,78 @@ const riverMaterial = new THREE.ShaderMaterial({
     }
 
     void main() {
-      float t = uTime;
-      // GLB is scaled 0.5, so double world xz to keep feature size sane.
-      vec2 p = vPos.xz * 2.0;
+      float r = length(vP);
+      // diamond frame: home plate sits toward +x+z (camera-side corner),
+      // u runs home -> center field, v across
+      vec2 hd = vec2(0.7071, 0.7071);
+      vec2 H = hd * 1.42; // home plate, authored offset from field center
+      vec2 p = vF - H;
+      float u = dot(p, -hd);
+      float v = dot(p, vec2(-hd.y, hd.x));
 
-      // Multi-scale ripple drifting along the river's corner diagonal.
-      vec2 flow = vec2(0.7071, -0.7071);
-      float ripple = noise(p * 0.55 + flow * t * 0.28)
-        + 0.55 * noise(p * 1.3 - flow * t * 0.22)
-        + 0.3 * noise(p * 2.8 + flow.yx * t * 0.35);
-      ripple /= 1.85;
-      // Stretch contrast so the waves read clearly without a bright glint.
-      ripple = smoothstep(0.15, 0.85, ripple);
-      vec3 water = mix(vec3(0.08, 0.17, 0.30), vec3(0.18, 0.32, 0.48), ripple);
+      // outfield grass: mottle + mow-stripe arcs centered on home plate
+      float mottle = noise(vF * 3.1) * 0.06;
+      float stripe = step(0.0, sin(length(p) * 7.0)) * 0.5 + 0.5;
+      vec3 grass = mix(vec3(0.16, 0.27, 0.10), vec3(0.21, 0.33, 0.13), stripe * 0.5 + mottle);
 
-      gl_FragColor = vec4(water, 1.0);
+      // dirt: basepath diamond (L1 band around the base square), home & mound
+      // circles, plus soft noise so it isn't a flat fill
+      float sHalf = 0.85; // half the home->second diagonal
+      float d1 = abs(u - sHalf) + abs(v);
+      float dirtM = smoothstep(0.17, 0.13, abs(d1 - sHalf)); // basepath band
+      dirtM = max(dirtM, smoothstep(0.30, 0.26, length(p)));                        // home circle
+      dirtM = max(dirtM, smoothstep(0.24, 0.20, length(vec2(u - sHalf, v))));       // pitcher's mound
+      vec3 dirt = mix(vec3(0.60, 0.45, 0.29), vec3(0.65, 0.50, 0.33), noise(vF * 6.0));
+      vec3 col = mix(grass, dirt, dirtM);
+
+      // warning track: tan ring at the field rim
+      float track = smoothstep(0.86, 0.90, r);
+      col = mix(col, mix(vec3(0.55, 0.43, 0.29), vec3(0.59, 0.47, 0.32), noise(vF * 5.0)), track);
+
+      // foul lines: white rays from home along |v| == u, fading at the rim
+      float foul = smoothstep(0.045, 0.02, abs(abs(v) - u)) * step(0.25, u) * (1.0 - track);
+      // bases: white pads at 1st / 2nd / 3rd corners of the square
+      float bases = 0.0;
+      bases = max(bases, smoothstep(0.09, 0.06, abs(u - sHalf) + abs(v - sHalf)));
+      bases = max(bases, smoothstep(0.09, 0.06, abs(u - sHalf) + abs(v + sHalf)));
+      bases = max(bases, smoothstep(0.09, 0.06, abs(u - 2.0 * sHalf) + abs(v)));
+      col = mix(col, vec3(0.93, 0.92, 0.88), max(foul * 0.85, bases));
+
+      // nestle: darken toward the surrounding stands
+      col *= mix(1.0, 0.78, smoothstep(0.82, 1.0, r));
+
+      gl_FragColor = vec4(col, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }
   `,
 })
 
-// Tiny unlit people — cylinder body + sphere head, two InstancedMeshes sharing
-// transforms — clumped around each landmark. Authored in GLB coords (30x30,
-// ground y=0), mounted at scale 0.5 like the GLB. Module singleton.
-// ponytail: hand-picked clump anchors, no road/river collision checks —
-// re-place anchors if the layout ever changes.
-const people = (() => {
-  // [x, z, radius, count] in authored coords, pulled from the GLB node table
-  const clumps = [
-    [-5.5, -3.4, 1.1, 12], [-9.6, -2.4, 1.0, 9], [-7.9, -1.6, 1.0, 8], // stadium
-    [6.8, -1.7, 1.0, 10], [10.6, -0.9, 0.9, 8], [8.0, -0.6, 0.9, 7],   // arena
-    [5.2, -8.2, 1.0, 12], [9.6, -7.7, 0.9, 8], [7.4, -7.4, 0.9, 7],    // RenCen
-    [-5.2, 7.4, 0.9, 10], [-9.6, 7.0, 0.9, 8], [-7.5, 6.4, 0.9, 7],    // civic tower
-    [5.4, 4.7, 0.9, 10], [9.6, 4.2, 0.9, 8], [7.6, 3.6, 0.9, 7],       // brick block
-    [0, 1, 1.3, 14],                                                    // central park
-    [-1.2, -4.5, 0.7, 5], [1.2, 4.8, 0.7, 5],                           // sidewalks
-  ]
-  const shirts = ['#c0504d', '#4f81bd', '#9bbb59', '#8064a2', '#f2c14e', '#e8e4d8', '#4bacc6']
-  const n = clumps.reduce((s, c) => s + c[3], 0)
-  const bodies = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.05, 0.075, 0.26, 6), new THREE.MeshBasicMaterial(), n)
-  const heads = new THREE.InstancedMesh(
-    new THREE.SphereGeometry(0.075, 8, 6), new THREE.MeshBasicMaterial({ color: '#e6b8a2' }), n)
-  // Per-person wander params: each walker paces a small circle around its
-  // spawn point (heading = tangent), the rest stand still. ~70% walk.
-  const params = []
-  for (const [cx, cz, r, count] of clumps) {
-    for (let k = 0; k < count; k++) {
-      const a = Math.random() * Math.PI * 2
-      const d = Math.sqrt(Math.random()) * r
-      params.push({
-        hx: cx + Math.cos(a) * d,
-        hz: cz + Math.sin(a) * d,
-        s: 0.85 + Math.random() * 0.3,
-        rot: Math.random() * Math.PI * 2,
-        wr: Math.random() < 0.7 ? 0.25 + Math.random() * 0.45 : 0,
-        w: (0.25 + Math.random() * 0.35) * (Math.random() < 0.5 ? -1 : 1),
-        ph: Math.random() * Math.PI * 2,
-      })
-    }
-  }
-  params.forEach((_, i) => bodies.setColorAt(i, new THREE.Color(shirts[i % shirts.length])))
-  const g = new THREE.Group()
-  g.add(bodies, heads)
-  return { g, params, bodies, heads }
-})()
+function Ballfield() {
+  return (
+    <mesh
+      position={FIELD_CENTER}
+      rotation-x={-Math.PI / 2}
+      scale={[FIELD_RADII[0], FIELD_RADII[1], 1]}
+      material={ballfieldMaterial}
+    >
+      <circleGeometry args={[1, 48]} />
+    </mesh>
+  )
+}
+
+// Detroit's people singleton — the system itself lives in People.jsx, shared
+// with Ann Arbor. Clump anchors [x, z, radius, count] in authored coords,
+// pulled from the GLB node table.
+const detroitPeople = makePeople([
+  [-5.5, -3.4, 1.1, 12], [-9.6, -2.4, 1.0, 9], [-7.9, -1.6, 1.0, 8], // stadium
+  [6.8, -1.7, 1.0, 10], [10.6, -0.9, 0.9, 8], [8.0, -0.6, 0.9, 7],   // arena
+  [5.2, -8.2, 1.0, 12], [9.6, -7.7, 0.9, 8], [7.4, -7.4, 0.9, 7],    // RenCen
+  [-5.2, 7.4, 0.9, 10], [-9.6, 7.0, 0.9, 8], [-7.5, 6.4, 0.9, 7],    // civic tower
+  [5.4, 4.7, 0.9, 10], [9.6, 4.2, 0.9, 8], [7.6, 3.6, 0.9, 7],       // brick block
+  [0, 1, 1.3, 14],                                                    // central park
+  [-1.2, -4.5, 0.7, 5], [1.2, 4.8, 0.7, 5],                           // sidewalks
+])
 
 // Detroit People Mover — elevated guideway loop threading between the
 // landmarks, with a two-car train riding it. Authored coords (30x30,
@@ -185,6 +262,7 @@ const _tan = new THREE.Vector3()
 
 function PeopleMover() {
   useFrame(({ clock }) => {
+    if (!sceneRendering('city')) return
     const t = clock.elapsedTime / 70 // longer perimeter loop, ~70s per lap
     mover.cars.forEach((car, i) => {
       const u = (t + i * 0.0135) % 1
@@ -200,59 +278,30 @@ function PeopleMover() {
   return <primitive object={mover.g} scale={0.5} />
 }
 
-const _m = new THREE.Matrix4()
-const _q = new THREE.Quaternion()
-const _p = new THREE.Vector3()
-const _sc = new THREE.Vector3()
-const _up = new THREE.Vector3(0, 1, 0)
-
-function People() {
-  useFrame(({ clock }) => {
-    const t = clock.elapsedTime
-    const { params, bodies, heads } = people
-    for (let i = 0; i < params.length; i++) {
-      const p = params[i]
-      const a = p.ph + t * p.w
-      const x = p.hx + Math.cos(a) * p.wr
-      const z = p.hz + Math.sin(a) * p.wr
-      // face the tangent of the circle; standers keep their spawn heading
-      const heading = p.wr ? -a - Math.sign(p.w) * Math.PI / 2 : p.rot
-      // little step bob while walking
-      const bob = p.wr ? Math.abs(Math.sin(t * 6 + p.ph)) * 0.015 : 0
-      _q.setFromAxisAngle(_up, heading)
-      _sc.setScalar(p.s)
-      bodies.setMatrixAt(i, _m.compose(_p.set(x, (0.13 + bob) * p.s, z), _q, _sc))
-      heads.setMatrixAt(i, _m.compose(_p.set(x, (0.32 + bob) * p.s, z), _q, _sc))
-    }
-    bodies.instanceMatrix.needsUpdate = true
-    heads.instanceMatrix.needsUpdate = true
-  })
-  return <primitive object={people.g} scale={0.5} />
-}
-
-const ktx2 = new KTX2Loader().setTranscoderPath(
+// shared with AnnArbor.jsx — one transcoder instance for both GLBs
+// eslint-disable-next-line react-refresh/only-export-components -- dev-only HMR granularity
+export const ktx2 = new KTX2Loader().setTranscoderPath(
   'https://cdn.jsdelivr.net/gh/pmndrs/drei-assets@master/basis/'
 )
 
 function BakedCity() {
   const gl = useThree((s) => s.gl)
-  const { scene } = useGLTF('/detroit.glb', true, false, (loader) =>
+  const { scene } = useGLTF('/detroit_compressed.glb', true, false, (loader) =>
     loader.setKTX2Loader(ktx2.detectSupport(gl))
   )
   useEffect(() => {
     const junk = []
     scene.traverse((o) => {
       if (o.isCamera || o.isLight) junk.push(o)
-      // isShaderMaterial: the effect re-runs (StrictMode, HMR) on the cached
-      // mutated scene — re-point any prior river ShaderMaterial at the
-      // current module's instance instead of clobbering it to basic-white
-      else if (o.isMesh && (o.material.name === 'Detroit_River_Blue' || o.material.isShaderMaterial))
-        o.material = riverMaterial
+      // River is baked into the ground/site atlas (no Detroit_River_Blue mesh
+      // in the compressed GLB) — color-key + ripple like Ann Arbor.
+      else if (o.isMesh && /DET_UNLIT_(Ground|SiteBase)/.test(o.material.name))
+        patchBakedWater(o.material)
       // Most of the city remains unlit because its atlas already contains
       // baked lighting. The Renaissance Center is the exception: it sits in
       // the dark screen-right corner, so give only that landmark a light-aware
       // material for the localized fill light below.
-      else if (o.isMesh && o.name === 'GLB_Renaissance_Center') {
+      else if (o.isMesh && (o.name === 'GLB_Renaissance_Center' || o.material.name === 'DET_UNLIT_LargeLandmark')) {
         if (!o.material.userData.cityFill) {
           const source = o.material
           o.material = new THREE.MeshLambertMaterial({
@@ -283,7 +332,11 @@ export function City() {
       <pointLight position={[4.5, 7.5, -4.8]} intensity={18} distance={13} decay={1.6} color="#dcecff" />
       {/* no local Suspense — the GLB load suspends up to the app-level loading screen */}
       <BakedCity />
-      <People />
+      {/* authored coords like PeopleMover — same 0.5 mount */}
+      <group scale={0.5}>
+        <Ballfield />
+      </group>
+      <People people={detroitPeople} scene="city" />
       <PeopleMover />
     </group>
   )

@@ -1,172 +1,34 @@
-import { Color, Uniform } from 'three'
+import { Uniform } from 'three'
 import { useControls } from 'leva'
 import { BlendFunction, Effect, EffectAttribute } from 'postprocessing'
-import { Bloom, EffectComposer, wrapEffect } from '@react-three/postprocessing'
+import { EffectComposer, wrapEffect } from '@react-three/postprocessing'
 
-const LEGACY_MODES = { ink: 0, anime: 1, outline: 2, 'b&w': 3 }
+const MODES = { ink: 0, anime: 1, outline: 2, 'b&w': 3 }
 
-const sereneFragmentShader = /* glsl */ `
-  uniform float uWash;
-  uniform float uWashRadius;
-  uniform float uSaturation;
-  uniform float uGreenSoftness;
-  uniform vec3 uShadowTint;
-  uniform vec3 uHighlightTint;
-  uniform vec3 uHazeColor;
-  uniform float uHaze;
-  uniform float uVignette;
-  uniform float uDither;
-
-  float sereneLuma(vec3 c) {
-    return dot(c, vec3(0.299, 0.587, 0.114));
-  }
-
-  float sereneHash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
-
-  // Average nearby color only when its value is close to the center pixel.
-  // This quiets the grass palette without blurring strong illustrated edges.
-  vec4 sereneGather(vec2 uv, vec2 offset, float centerLuma) {
-    vec4 sampleColor = texture2D(inputBuffer, uv + offset);
-    float delta = abs(sereneLuma(sampleColor.rgb) - centerLuma);
-    float edgeWeight = exp(-delta * 18.0);
-    return vec4(sampleColor.rgb * edgeWeight, edgeWeight);
-  }
-
-  vec3 sereneTint(vec3 color, vec3 tint, float amount) {
-    float value = sereneLuma(color);
-    float tintValue = max(sereneLuma(tint), 0.001);
-    vec3 valueMatchedTint = tint * (value / tintValue);
-    return mix(color, valueMatchedTint, amount);
-  }
-
-  void mainImage(
-    const in vec4 inputColor,
-    const in vec2 uv,
-    const in float depth,
-    out vec4 outputColor
-  ) {
-    vec3 original = inputColor.rgb;
-    float centerLuma = sereneLuma(original);
-    vec2 radius = texelSize * uWashRadius;
-
-    vec4 gathered = vec4(original, 1.0);
-    gathered += sereneGather(uv, vec2(radius.x, 0.0), centerLuma);
-    gathered += sereneGather(uv, vec2(-radius.x, 0.0), centerLuma);
-    gathered += sereneGather(uv, vec2(0.0, radius.y), centerLuma);
-    gathered += sereneGather(uv, vec2(0.0, -radius.y), centerLuma);
-    vec3 neighborColor = gathered.rgb / max(gathered.a, 0.001);
-
-    // Transfer the neighbor chroma while retaining most of the center pixel's
-    // luminance detail. A small value wash keeps the result painterly.
-    vec3 neighborChroma = neighborColor - vec3(sereneLuma(neighborColor));
-    vec3 chromaWash = vec3(centerLuma) + neighborChroma;
-    chromaWash = mix(chromaWash, neighborColor, 0.08);
-    vec3 color = mix(original, chromaWash, uWash);
-
-    // Calm saturated grass selectively so the red roof remains the focal
-    // accent. Moving a little green energy into red/blue produces a sage hue.
-    float greenLead = color.g - max(color.r, color.b);
-    float greenMask = smoothstep(-0.005, 0.18, greenLead)
-      * smoothstep(0.08, 0.55, sereneLuma(color));
-    vec3 sage = color;
-    sage.r += max(color.g - color.r, 0.0) * 0.18;
-    sage.b += max(color.g - color.b, 0.0) * 0.12;
-    sage.g *= 0.87;
-    color = mix(color, sage, greenMask * uGreenSoftness);
-
-    float value = sereneLuma(color);
-    color = mix(vec3(value), color, uSaturation);
-
-    // Luma-preserving split tone: cool lifted shadows, warm creamy light.
-    float shadowMask = 1.0 - smoothstep(0.12, 0.58, value);
-    float highlightMask = smoothstep(0.52, 0.96, value);
-    color = sereneTint(color, uShadowTint, shadowMask * 0.085);
-    color = sereneTint(color, uHighlightTint, highlightMask * 0.095);
-
-    // Gentle toe lift and shoulder compression without flattening local form.
-    vec3 softCurve = color / (vec3(0.86) + color * 0.14);
-    color = mix(color, softCurve, 0.16);
-
-    // Orthographic depth is linear. The cleared background remains at 1.0,
-    // so it is excluded while the rear of the diorama receives subtle haze.
-    float sceneMask = 1.0 - step(0.999, depth);
-    float hazeMask = smoothstep(0.14, 0.29, depth) * sceneMask * uHaze;
-    color = mix(color, uHazeColor, hazeMask);
-
-    vec2 vignetteUv = (uv - vec2(0.5, 0.50)) * vec2(0.86, 1.0);
-    float vignette = smoothstep(0.38, 0.72, length(vignetteUv));
-    color *= 1.0 - vignette * uVignette;
-
-    // Static sub-pixel dither prevents the soft gradients from banding.
-    float grain = sereneHash(floor(uv / texelSize)) - 0.5;
-    color += grain * uDither;
-
-    outputColor = vec4(max(color, 0.0), inputColor.a);
-  }
-`
-
-class SereneEffectImpl extends Effect {
-  constructor({
-    wash = 0.2,
-    washRadius = 1.8,
-    saturation = 0.01,
-    greenSoftness = 0.43,
-    shadowTint = '#718792',
-    highlightTint = '#ffe4bb',
-    hazeColor = '#a9c6c0',
-    haze = 0.07,
-    vignette = 0.06,
-    dither = 0.006,
-  } = {}) {
-    super('SereneEffect', sereneFragmentShader, {
-      blendFunction: BlendFunction.NORMAL,
-      attributes: EffectAttribute.CONVOLUTION | EffectAttribute.DEPTH,
-      uniforms: new Map([
-        ['uWash', new Uniform(wash)],
-        ['uWashRadius', new Uniform(washRadius)],
-        ['uSaturation', new Uniform(saturation)],
-        ['uGreenSoftness', new Uniform(greenSoftness)],
-        ['uShadowTint', new Uniform(new Color(shadowTint))],
-        ['uHighlightTint', new Uniform(new Color(highlightTint))],
-        ['uHazeColor', new Uniform(new Color(hazeColor))],
-        ['uHaze', new Uniform(haze)],
-        ['uVignette', new Uniform(vignette)],
-        ['uDither', new Uniform(dither)],
-      ]),
-    })
-  }
-}
-
-const WrappedSereneEffect = wrapEffect(SereneEffectImpl, {
-  blendFunction: BlendFunction.NORMAL,
-})
-
-const legacyFragmentShader = /* glsl */ `
+const styleFragmentShader = /* glsl */ `
   uniform int uMode;
   uniform float uEdge;
   uniform float uLevels;
   uniform float uStrength;
   uniform float uInkSaturation;
-  uniform float uLegacyVignette;
+  uniform float uVignette;
 
-  float legacyLuma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+  float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-  float legacySampleLuma(vec2 uv) {
+  float sampleLuma(vec2 uv) {
     vec4 s = texture2D(inputBuffer, uv);
-    return legacyLuma(s.rgb) * s.a;
+    return luma(s.rgb) * s.a;
   }
 
   void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
-    float tl = legacySampleLuma(uv + texelSize * vec2(-1.0,  1.0));
-    float t  = legacySampleLuma(uv + texelSize * vec2( 0.0,  1.0));
-    float tr = legacySampleLuma(uv + texelSize * vec2( 1.0,  1.0));
-    float l  = legacySampleLuma(uv + texelSize * vec2(-1.0,  0.0));
-    float r  = legacySampleLuma(uv + texelSize * vec2( 1.0,  0.0));
-    float bl = legacySampleLuma(uv + texelSize * vec2(-1.0, -1.0));
-    float b  = legacySampleLuma(uv + texelSize * vec2( 0.0, -1.0));
-    float br = legacySampleLuma(uv + texelSize * vec2( 1.0, -1.0));
+    float tl = sampleLuma(uv + texelSize * vec2(-1.0,  1.0));
+    float t  = sampleLuma(uv + texelSize * vec2( 0.0,  1.0));
+    float tr = sampleLuma(uv + texelSize * vec2( 1.0,  1.0));
+    float l  = sampleLuma(uv + texelSize * vec2(-1.0,  0.0));
+    float r  = sampleLuma(uv + texelSize * vec2( 1.0,  0.0));
+    float bl = sampleLuma(uv + texelSize * vec2(-1.0, -1.0));
+    float b  = sampleLuma(uv + texelSize * vec2( 0.0, -1.0));
+    float br = sampleLuma(uv + texelSize * vec2( 1.0, -1.0));
     float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
     float gy = (tl + 2.0 * t + tr) - (bl + 2.0 * b + br);
     float edge = clamp(length(vec2(gx, gy)) * uEdge, 0.0, 1.0);
@@ -177,20 +39,20 @@ const legacyFragmentShader = /* glsl */ `
     if (uMode == 0) {
       vec3 paper = vec3(0.93, 0.90, 0.84);
       vec3 ink = vec3(0.10, 0.12, 0.17);
-      float wash = floor(legacyLuma(c) * uLevels) / max(uLevels - 1.0, 1.0);
+      float wash = floor(luma(c) * uLevels) / max(uLevels - 1.0, 1.0);
       color = mix(ink, paper, clamp(wash, 0.0, 1.0));
       // bleed the original chroma back into the duotone wash
-      color += (c - vec3(legacyLuma(c))) * uInkSaturation;
+      color += (c - vec3(luma(c))) * uInkSaturation;
       color = mix(color, ink, edge);
     } else if (uMode == 1) {
       vec3 banded = (floor(c * uLevels) + 0.5) / uLevels;
-      float gray = legacyLuma(banded);
+      float gray = luma(banded);
       color = mix(vec3(gray), banded, 1.25);
       color = mix(color, vec3(0.04), edge * 0.85);
     } else if (uMode == 2) {
       color = mix(c, vec3(0.03), edge);
     } else {
-      float gray = smoothstep(0.03, 0.97, legacyLuma(c));
+      float gray = smoothstep(0.03, 0.97, luma(c));
       color = vec3(gray);
     }
 
@@ -198,22 +60,22 @@ const legacyFragmentShader = /* glsl */ `
 
     vec2 vignetteUv = (uv - 0.5) * vec2(0.86, 1.0);
     float vignette = smoothstep(0.38, 0.72, length(vignetteUv));
-    color *= 1.0 - vignette * uLegacyVignette;
+    color *= 1.0 - vignette * uVignette;
 
     outputColor = vec4(max(color, 0.0), inputColor.a);
   }
 `
 
-class LegacyStyleEffectImpl extends Effect {
+class StyleEffectImpl extends Effect {
   constructor({
     mode = 0,
     edge = 3,
     levels = 12,
     strength = 0.51,
     inkSaturation = 0.96,
-    legacyVignette = 0.5,
+    vignette = 0.5,
   } = {}) {
-    super('LegacyStyleEffect', legacyFragmentShader, {
+    super('StyleEffect', styleFragmentShader, {
       blendFunction: BlendFunction.NORMAL,
       attributes: EffectAttribute.CONVOLUTION,
       uniforms: new Map([
@@ -222,89 +84,48 @@ class LegacyStyleEffectImpl extends Effect {
         ['uLevels', new Uniform(levels)],
         ['uStrength', new Uniform(strength)],
         ['uInkSaturation', new Uniform(inkSaturation)],
-        ['uLegacyVignette', new Uniform(legacyVignette)],
+        ['uVignette', new Uniform(vignette)],
       ]),
     })
   }
 }
 
-const WrappedLegacyEffect = wrapEffect(LegacyStyleEffectImpl, {
+const WrappedStyleEffect = wrapEffect(StyleEffectImpl, {
   blendFunction: BlendFunction.NORMAL,
 })
 
 export function StylePass() {
-  const {
-    style,
-    wash,
-    washRadius,
-    saturation,
-    greenSoftness,
-    haze,
-    vignette,
-    bloom,
-    edge,
-    levels,
-    inkStrength,
-    inkSaturation,
-    inkVignette,
-  } = useControls('style', {
-    style: { value: 'ink', options: ['serene', 'none', 'ink', 'anime', 'outline', 'b&w'] },
-    wash: { value: 0.2, min: 0, max: 0.6, step: 0.01, label: 'color wash' },
-    washRadius: { value: 1.8, min: 0.5, max: 4, step: 0.1, label: 'wash radius' },
-    saturation: { value: 0.01, min: 0, max: 1.4, step: 0.01 },
-    greenSoftness: { value: 0.43, min: 0, max: 1.5, step: 0.01, label: 'soften greens' },
-    haze: { value: 0.07, min: 0, max: 0.4, step: 0.005 },
-    vignette: { value: 0.06, min: 0, max: 0.3, step: 0.005 },
-    bloom: { value: 0.38, min: 0, max: 1, step: 0.01 },
-    edge: { value: 3, min: 0, max: 10, step: 0.1, label: 'legacy lines' },
-    levels: { value: 12, min: 2, max: 12, step: 1, label: 'legacy bands' },
+  const { style, edge, levels, inkStrength, inkSaturation, inkVignette } = useControls('style', {
+    style: { value: 'ink', options: ['ink', 'none', 'anime', 'outline', 'b&w'] },
+    edge: { value: 3, min: 0, max: 10, step: 0.1, label: 'lines' },
+    levels: { value: 12, min: 2, max: 12, step: 1, label: 'bands' },
     inkStrength: {
-      value: 0.51, min: 0, max: 1, step: 0.01, label: 'strength',
-      render: (get) => !['serene', 'none'].includes(get('style.style')),
+      value: 0.22, min: 0, max: 1, step: 0.01, label: 'strength',
+      render: (get) => get('style.style') !== 'none',
     },
     inkSaturation: {
-      value: 2.0, min: 0, max: 15.5, step: 0.01, label: 'ink saturation',
+      value: 3.0, min: 0, max: 15.5, step: 0.01, label: 'ink saturation',
       render: (get) => get('style.style') === 'ink',
     },
     inkVignette: {
       value: 0.5, min: 0, max: 0.5, step: 0.005, label: 'vignette',
-      render: (get) => !['serene', 'none'].includes(get('style.style')),
+      render: (get) => get('style.style') !== 'none',
     },
   }, { collapsed: false, order: 8 })
 
   if (style === 'none') return null
 
-  if (style !== 'serene') {
-    return (
-      <EffectComposer multisampling={4}>
-        <WrappedLegacyEffect
-          mode={LEGACY_MODES[style]}
-          edge={edge}
-          levels={levels}
-          strength={inkStrength}
-          inkSaturation={inkSaturation}
-          legacyVignette={inkVignette}
-        />
-      </EffectComposer>
-    )
-  }
-
   return (
-    <EffectComposer multisampling={4} depthBuffer>
-      <Bloom
-        mipmapBlur
-        intensity={bloom}
-        luminanceThreshold={0.82}
-        luminanceSmoothing={0.18}
-        radius={0.75}
-      />
-      <WrappedSereneEffect
-        wash={wash}
-        washRadius={washRadius}
-        saturation={saturation}
-        greenSoftness={greenSoftness}
-        haze={haze}
-        vignette={vignette}
+    // multisampling 0: the composer's input scene is just the blend quad —
+    // scene AA already happened in the samples:4 FBOs
+    <EffectComposer multisampling={0}>
+      <WrappedStyleEffect
+        mode={MODES[style]}
+        edge={edge}
+        levels={levels}
+        strength={inkStrength}
+        inkSaturation={inkSaturation}
+        vignette={inkVignette}
       />
     </EffectComposer>
   )
