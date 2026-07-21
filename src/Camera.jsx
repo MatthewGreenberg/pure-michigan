@@ -42,7 +42,8 @@ export function Camera({ scene }) {
   // instead of cropping the width: the map hub opens far enough to fit the
   // whole mitten, the dioramas just enough to read the full tile.
   const narrow = Math.max(0, 1 - aspect)
-  const maxView = 8.4 + narrow * (scene === 'map' ? 36 : 9.5)
+  // deliberately tighter than width-fit — sides may crop, content stays big
+  const maxView = 8.4 + narrow * (scene === 'map' ? 14 : 6.5)
   const view = MathUtils.clamp((FIELD_HALF * Math.SQRT2 + 2.0) / aspect, 7.0, maxView)
   const zoom = height / (2 * view)
   const defaultZoom = zoom * DEFAULT_ZOOM_SCALE
