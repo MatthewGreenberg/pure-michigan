@@ -436,6 +436,12 @@ function faceCamera(group, camera, yaw = 0) {
   group.updateMatrixWorld()
 }
 
+// Touch screens never hover, so the labels would rest dim and small forever —
+// hold them at full contrast and scale them up so they read on a phone.
+const TOUCH = window.matchMedia('(hover: none)').matches
+const LABEL_REST = TOUCH ? 1 : 0
+const LABEL_SCALE = TOUCH ? 1.5 : 1
+
 function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
   const hoverAmount = useRef(0)
   const preview = useRef(null)
@@ -489,12 +495,13 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
     }
     if (pinMaterial.current) pinMaterial.current.emissiveIntensity = hover * 0.48
     if (pinCore.current) pinCore.current.scale.setScalar(1 + hover * 0.13)
+    const lift = Math.max(hover, LABEL_REST)
     if (labelPanel.current) {
       labelPanel.current.position.y = 0.8 + hover * 0.05
-      labelPanel.current.scale.setScalar(1 + hover * 0.04)
+      labelPanel.current.scale.setScalar((1 + hover * 0.04) * LABEL_SCALE)
     }
-    if (labelMaterial.current) labelMaterial.current.opacity = 0.5 + hover * 0.5
-    if (labelText.current?.material) labelText.current.material.opacity = 0.55 + hover * 0.45
+    if (labelMaterial.current) labelMaterial.current.opacity = 0.5 + lift * 0.5
+    if (labelText.current?.material) labelText.current.material.opacity = 0.55 + lift * 0.45
   }, BEFORE_FBO)
 
   return (

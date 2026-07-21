@@ -43,13 +43,25 @@ export function Camera({ scene }) {
   // whole mitten, the dioramas just enough to read the full tile.
   const narrow = Math.max(0, 1 - aspect)
   // deliberately tighter than width-fit — sides may crop, content stays big
-  const maxView = 8.4 + narrow * (scene === 'map' ? 14 : 6.5)
+  const maxView = 8.4 + narrow * (scene === 'map' ? 7.5 : 2.8)
   const view = MathUtils.clamp((FIELD_HALF * Math.SQRT2 + 2.0) / aspect, 7.0, maxView)
   const zoom = height / (2 * view)
   const defaultZoom = zoom * DEFAULT_ZOOM_SCALE
   // portrait already sits far back — a full 0.5x intro pull-back would outrun
   // the intro cloud blanket's plane bounds, so shorten the dolly there
   const zoomOff = narrow > 0 ? 0.75 : ZOOM_OFF
+
+  // Portrait map: truck the framing a bit right (renders the region right of
+  // center, content shifts left) so the mitten sits centered. View offset
+  // lives outside CameraControls' pose, so none of the setLookAt sites care.
+  const camRef = useRef(null)
+  const panPx = scene === 'map' ? Math.round(narrow * 0.2 * width) : 0
+  useEffect(() => {
+    const camera = camRef.current
+    if (!camera) return
+    if (panPx) camera.setViewOffset(width, height, panPx, 0, width, height)
+    else if (camera.view) camera.clearViewOffset()
+  }, [panPx, width, height])
 
   useEffect(() => {
     const cameraControls = controls.current
@@ -140,6 +152,7 @@ export function Camera({ scene }) {
     <>
       <group ref={sway}>
         <OrthographicCamera
+          ref={camRef}
           makeDefault
           position={POSITION}
           zoom={defaultZoom}
