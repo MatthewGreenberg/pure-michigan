@@ -15,6 +15,8 @@ const ZOOM_OFF = 0.5
 const MOUSE_YAW = 0.035 // radians of parallax sway at the screen edge
 const MIN_ZOOM_SCALE = 0.78
 const DEFAULT_ZOOM_SCALE = MIN_ZOOM_SCALE
+// touch: pinch zoom persists (no snap-back on release) and gets real range
+const TOUCH = window.matchMedia('(hover: none)').matches
 
 // Isometric corner view: the square tile reads as a diamond floating on its
 // soil block, ocean along the far edge. The target sits below ground so the
@@ -55,7 +57,7 @@ export function Camera({ scene }) {
   // center, content shifts left) so the mitten sits centered. View offset
   // lives outside CameraControls' pose, so none of the setLookAt sites care.
   const camRef = useRef(null)
-  const panPx = scene === 'map' ? Math.round(narrow * 0.2 * width) : 0
+  const panPx = scene === 'map' ? Math.round(narrow * 0.45 * width) : 0
   useEffect(() => {
     const camera = camRef.current
     if (!camera) return
@@ -172,12 +174,12 @@ export function Camera({ scene }) {
         polarRotateSpeed={0.65}
         dollySpeed={0.7}
         minZoom={zoom * (intro ? 0.35 : MIN_ZOOM_SCALE)}
-        maxZoom={zoom * 1.28}
+        maxZoom={zoom * (TOUCH ? 2.4 : 1.28)}
         minPolarAngle={0.9}
         maxPolarAngle={1.05}
         minAzimuthAngle={Math.PI / 4 - 0.22}
         maxAzimuthAngle={Math.PI / 4 + 0.22}
-        onControlEnd={restoreDefaultView}
+        onControlEnd={TOUCH ? undefined : restoreDefaultView}
       />
     </>
   )
