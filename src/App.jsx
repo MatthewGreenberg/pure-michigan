@@ -21,6 +21,7 @@ import { skyMaterial, skyUniforms } from './skyMaterial.js'
 import { StylePass } from './StyleEffect.jsx'
 import { groundMaterial } from './grass/material.js'
 import { GRID, TILE } from './grass/constants.js'
+import { lowGPU } from './gpu.js'
 
 const TRANSITION_SECONDS = 1.6
 
@@ -172,8 +173,8 @@ function Scenes({ activeScene, onSelect, children }) {
   const annarborScene = useMemo(() => new THREE.Scene(), [])
   // Two shared targets, not one per scene: only the outgoing/incoming pair
   // ever blends, so new destinations cost zero extra VRAM.
-  const outgoingFBO = useFBO({ samples: 4 })
-  const residentFBO = useFBO({ samples: 4 })
+  const outgoingFBO = useFBO({ samples: lowGPU ? 0 : 4 })
+  const residentFBO = useFBO({ samples: lowGPU ? 0 : 4 })
   const fromScene = useRef(START_SCENE)
   const toScene = useRef(START_SCENE)
   const p = useRef(1)
@@ -475,7 +476,7 @@ export default function App() {
       <Leva collapsed hidden={!new URLSearchParams(window.location.search).has('debug')} />
       {/* antialias off: only fullscreen quads hit the canvas — the scene AA
           is the samples:4 on the two FBOs in Scenes */}
-      <Canvas shadows dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }}>
+      <Canvas shadows={!lowGPU} dpr={lowGPU ? 1 : [1, 1.5]} gl={{ antialias: false, alpha: false }}>
         <Suspense fallback={null}>
           <Camera scene={activeScene} />
           <Scenes activeScene={activeScene} onSelect={setActiveScene}>

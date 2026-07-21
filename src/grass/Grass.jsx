@@ -7,12 +7,16 @@ import { buildGeometry } from './geometry.js'
 import { randomizeTiles, reseed } from './tileParams.js'
 import { uniforms, material } from './material.js'
 import { setPathParam } from './densityMask.js'
+import { lowGPU } from '../gpu.js'
 
 // ponytail: module singletons — one Grass instance, and it keeps the React
 // Compiler happy (no render-scope mutation). Move into the component if this
 // ever needs to mount more than once.
 const geometry = buildGeometry()
-geometry.instanceCount = GRASS_DEFAULTS.blades
+// weak GPU: third of the blades — the vertex-bound cost scales linearly and
+// the blade-major layout keeps the thinning even across tiles
+const defaultBlades = lowGPU ? Math.round(GRASS_DEFAULTS.blades / 3) : GRASS_DEFAULTS.blades
+geometry.instanceCount = defaultBlades
 
 export function Grass() {
   const { colorA, colorB, colorC, gradScale, overlayScale } = useControls({
@@ -38,7 +42,7 @@ export function Grass() {
   useControls('field', {
     clump: { value: GRASS_DEFAULTS.clump, min: 0, max: 0.9, step: 0.01, onChange: (v) => { uniforms.uClump.value = v } },
     clumpScale: { value: GRASS_DEFAULTS.clumpScale, min: 0.6, max: 4, step: 0.1, label: 'clump scale', onChange: (v) => { uniforms.uClumpScale.value = v } },
-    blades: { value: GRASS_DEFAULTS.blades, min: 1000, max: BLADE_COUNT, step: 100, onChange: (v) => { geometry.instanceCount = v } },
+    blades: { value: defaultBlades, min: 1000, max: BLADE_COUNT, step: 100, onChange: (v) => { geometry.instanceCount = v } },
   })
 
   useControls('blade shape', {
