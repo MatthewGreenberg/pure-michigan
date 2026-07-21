@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useControls } from 'leva'
 import { Text, useCursor } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
@@ -108,7 +108,8 @@ const waterMaterial = new THREE.MeshStandardMaterial({ color: '#b8c6bd', roughne
 const cityMaterial = new THREE.MeshStandardMaterial({ color: '#7c8986', roughness: 0.9 })
 const treeMaterial = new THREE.MeshStandardMaterial({ color: '#748769', roughness: 1 })
 const DESTINATION_POSITIONS = {
-  city: new THREE.Vector3(5.18, 0, 4.13),
+  // inland of the SE tip — previous spot sat slightly offshore and missed land hits
+  city: new THREE.Vector3(4.9, 0, 4.15),
   meadow: new THREE.Vector3(1.15, 0, -0.68),
 }
 // tilt axis ⟂ to the corner view diagonal — tips the map plane toward the iso camera
@@ -120,6 +121,38 @@ const _camQ = new THREE.Quaternion()
 const _parentEuler = new THREE.Euler()
 // Scenes FBO pass is priority 0.5 — run just before so portal billboards stick
 const BEFORE_FBO = 0.4
+const NO_RAYCAST = () => null
+
+function buildPinGeometry() {
+  const shape = new THREE.Shape()
+  shape.moveTo(0, -0.48)
+  shape.bezierCurveTo(-0.07, -0.37, -0.36, -0.12, -0.36, 0.16)
+  shape.bezierCurveTo(-0.36, 0.4, -0.2, 0.58, 0, 0.58)
+  shape.bezierCurveTo(0.2, 0.58, 0.36, 0.4, 0.36, 0.16)
+  shape.bezierCurveTo(0.36, -0.12, 0.07, -0.37, 0, -0.48)
+
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.1,
+    bevelEnabled: true,
+    bevelSegments: 3,
+    bevelSize: 0.025,
+    bevelThickness: 0.025,
+    curveSegments: 16,
+  })
+  geometry.translate(0, 0, -0.05)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+const pinGeometry = buildPinGeometry()
+const pinCoreGeometry = new THREE.CircleGeometry(0.115, 32)
+
+// HUD buttons set this so map pins share the same highlight state.
+let hubHoverSetter = null
+// eslint-disable-next-line react-refresh/only-export-components -- dev-only HMR granularity
+export function hoverHubDestination(id) {
+  hubHoverSetter?.(id)
+}
 
 const CITY_BLOCKS = [
   [-0.42, -0.22, 0.2, 0.42], [-0.14, -0.3, 0.16, 0.65], [0.14, -0.25, 0.2, 0.5],
@@ -128,7 +161,7 @@ const CITY_BLOCKS = [
 ]
 
 const NORTH_TREES = [
-  [-0.42, -0.16, 0.38], [-0.18, 0.18, 0.48], [0.08, -0.24, 0.42],
+  [-0.42, -0.16, 0.38], [-0.18, 0.18, 0.48],
   [0.34, 0.12, 0.5], [0.48, -0.22, 0.34], [-0.48, 0.28, 0.31],
 ]
 
@@ -141,7 +174,7 @@ function CityPreview() {
   return (
     <group>
       {CITY_BLOCKS.map(([x, z, width, height], index) => (
-        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={cityMaterial} castShadow>
+        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={cityMaterial} castShadow raycast={NO_RAYCAST}>
           <boxGeometry args={[width, height, width * 1.25]} />
         </mesh>
       ))}
@@ -153,7 +186,7 @@ function NorthPreview() {
   return (
     <group>
       {NORTH_TREES.map(([x, z, height], index) => (
-        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial}>
+        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial} raycast={NO_RAYCAST}>
           <coneGeometry args={[height * 0.26, height, 7]} />
         </mesh>
       ))}
@@ -165,7 +198,7 @@ function MapTrees() {
   return (
     <group>
       {MAP_TREES.map(([x, z, height], index) => (
-        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial}>
+        <mesh key={index} position={[x, LAND_TOP + height / 2, z]} material={treeMaterial} raycast={NO_RAYCAST}>
           <coneGeometry args={[height * 0.26, height, 7]} />
         </mesh>
       ))}
@@ -173,20 +206,14 @@ function MapTrees() {
   )
 }
 
-function destinationAt(point, peninsula) {
-  if (peninsula === 0) return 'meadow'
-  const cityDistance = point.distanceToSquared(DESTINATION_POSITIONS.city)
-  const meadowDistance = point.distanceToSquared(DESTINATION_POSITIONS.meadow)
-  return cityDistance < meadowDistance ? 'city' : 'meadow'
-}
-
-function faceCamera(group, camera) {
+function faceCamera(group, camera, yaw = 0) {
   // ponytail: billboard before the FBO pass — default useFrame runs too late / onBeforeRender is unreliable here
   if (!group?.parent) return
   group.parent.updateWorldMatrix(true, false)
   group.parent.getWorldQuaternion(_parentQ)
   camera.getWorldQuaternion(_camQ)
   group.quaternion.copy(_parentQ).invert().multiply(_camQ)
+  if (yaw) group.rotateY(yaw)
   group.updateMatrixWorld()
 }
 
@@ -202,105 +229,145 @@ function alignGrid(grid, camera) {
   grid.updateMatrixWorld()
 }
 
-function DestinationMarker({ id, chapter, label, position, highlighted, onHover, onSelect }) {
+function DestinationMarker({ id, chapter, label, position, highlighted, pinAngle = 0 }) {
+  const hoverAmount = useRef(0)
+  const preview = useRef(null)
+  const pointLight = useRef(null)
+  const areaGlow = useRef(null)
+  const areaGlowMaterial = useRef(null)
   const pulse = useRef(null)
-  const floatingPin = useRef(null)
-  const labelGroup = useRef(null)
+  const pulseMaterial = useRef(null)
+  const pinBillboard = useRef(null)
+  const pinMaterial = useRef(null)
+  const pinCore = useRef(null)
+  const labelPanel = useRef(null)
+  const labelMaterial = useRef(null)
 
-  useFrame(({ clock, camera }) => {
-    faceCamera(labelGroup.current, camera)
-    const wave = Math.sin(clock.elapsedTime * 2.4)
+  useFrame(({ clock, camera }, rawDt) => {
+    faceCamera(pinBillboard.current, camera, pinAngle)
+
+    const dt = Math.min(rawDt, 0.05)
+    hoverAmount.current = THREE.MathUtils.damp(
+      hoverAmount.current,
+      highlighted ? 1 : 0,
+      highlighted ? 9.5 : 7,
+      dt,
+    )
+    const hover = THREE.MathUtils.smoothstep(hoverAmount.current, 0, 1)
+    const wave = Math.sin(clock.elapsedTime * 2.6)
+    const pulseWave = (wave + 1) * 0.5
+
+    if (preview.current) preview.current.scale.setScalar(1 + hover * 0.115)
+    if (pointLight.current) pointLight.current.intensity = hover * 11
+    if (areaGlow.current) areaGlow.current.scale.setScalar(0.82 + hover * 0.18)
+    if (areaGlowMaterial.current) areaGlowMaterial.current.opacity = 0.018 + hover * 0.35
     if (pulse.current) {
-      const scale = 1 + wave * (highlighted ? 0.13 : 0.06)
+      const scale = 1 + pulseWave * (0.055 + hover * 0.12)
       pulse.current.scale.setScalar(scale)
     }
-    if (floatingPin.current) {
-      floatingPin.current.position.y = 1.24 + wave * (highlighted ? 0.075 : 0.035)
+    if (pulseMaterial.current) {
+      pulseMaterial.current.opacity = 0.48 + hover * 0.42 - pulseWave * hover * 0.12
     }
+    if (pinBillboard.current) {
+      pinBillboard.current.position.y = 1.12 + hover * 0.12 + wave * (0.012 + hover * 0.012)
+      pinBillboard.current.scale.setScalar(0.8 + hover * 0.08)
+    }
+    if (pinMaterial.current) pinMaterial.current.emissiveIntensity = 0.06 + hover * 0.42
+    if (pinCore.current) pinCore.current.scale.setScalar(1 + hover * 0.13)
+    if (labelPanel.current) {
+      labelPanel.current.position.y = 0.8 + hover * 0.035
+      labelPanel.current.scale.setScalar(1 + hover * 0.025)
+    }
+    if (labelMaterial.current) labelMaterial.current.opacity = 0.88 + hover * 0.12
   }, BEFORE_FBO)
 
   return (
-    <group
-      position={position}
-      onClick={(event) => { event.stopPropagation(); onSelect(id) }}
-      onPointerMove={(event) => { event.stopPropagation(); onHover(id) }}
-      onPointerOver={(event) => { event.stopPropagation(); onHover(id) }}
-      onPointerOut={(event) => { event.stopPropagation(); onHover(null) }}
-    >
-      <group scale={highlighted ? 1.1 : 1}>
+    <group position={position}>
+      <group ref={preview}>
         {id === 'city' ? <CityPreview /> : <NorthPreview />}
       </group>
       <pointLight
+        ref={pointLight}
         position={[0, 1.45, 0]}
         color={id === 'city' ? '#8fc5d2' : '#b8d69e'}
-        intensity={highlighted ? 14 : 0}
+        intensity={0}
         distance={3.8}
         decay={2}
       />
-      {/* ponytail: one invisible cylinder is the whole hit area — covers preview, pin, and label */}
-      <mesh position-y={1.3}>
-        <cylinderGeometry args={[1.55, 1.55, 3, 12]} />
+      {/* sized to the visible marker (preview footprint, pin, label) so hover matches what you see */}
+      <mesh
+        position-y={1.1}
+        userData={{ destination: id }}
+      >
+        <cylinderGeometry args={[0.95, 0.95, 2.5, 12]} />
         <meshBasicMaterial colorWrite={false} depthWrite={false} />
       </mesh>
       <mesh
+        ref={areaGlow}
         rotation-x={-Math.PI / 2}
         position-y={0.405}
+        raycast={NO_RAYCAST}
       >
         <circleGeometry args={[1.55, 48]} />
         <meshBasicMaterial
+          ref={areaGlowMaterial}
           color={id === 'city' ? '#20606f' : '#42663a'}
           transparent
-          opacity={highlighted ? 0.55 : 0.018}
+          opacity={0.018}
           depthWrite={false}
           toneMapped={false}
         />
       </mesh>
-      <mesh ref={pulse} rotation-x={-Math.PI / 2} position-y={0.41}>
+      <mesh ref={pulse} rotation-x={-Math.PI / 2} position-y={0.41} raycast={NO_RAYCAST}>
         <ringGeometry args={[0.44, 0.49, 32]} />
         <meshBasicMaterial
+          ref={pulseMaterial}
           color={id === 'city' ? '#1d4d59' : '#3d5a36'}
           transparent
-          opacity={highlighted ? 1 : 0.58}
+          opacity={0.48}
           depthWrite={false}
           toneMapped={false}
         />
       </mesh>
-      <group ref={floatingPin} position-y={1.24} scale={highlighted ? 1.12 : 1}>
-        <mesh position-y={-0.46} castShadow>
-          <cylinderGeometry args={[0.022, 0.022, 0.76, 8]} />
-          <meshBasicMaterial color={id === 'city' ? '#4d7580' : '#6f8b65'} />
-        </mesh>
-        <mesh position-y={-0.2} rotation-z={Math.PI} castShadow>
-          <coneGeometry args={[0.23, 0.38, 24]} />
+      <group ref={pinBillboard} position-y={1.12} scale={0.8}>
+        <mesh geometry={pinGeometry} raycast={NO_RAYCAST}>
           <meshStandardMaterial
+            ref={pinMaterial}
             color={id === 'city' ? '#4d7580' : '#6f8b65'}
             emissive={id === 'city' ? '#2e7381' : '#4e7040'}
-            emissiveIntensity={highlighted ? 0.55 : 0.08}
-            roughness={0.65}
+            emissiveIntensity={0.06}
+            roughness={0.58}
+            metalness={0.02}
           />
         </mesh>
-        <mesh castShadow>
-          <sphereGeometry args={[0.29, 24, 18]} />
-          <meshStandardMaterial
-            color={id === 'city' ? '#4d7580' : '#6f8b65'}
-            emissive={id === 'city' ? '#2e7381' : '#4e7040'}
-            emissiveIntensity={highlighted ? 0.55 : 0.08}
-            roughness={0.62}
-          />
+        <mesh
+          ref={pinCore}
+          geometry={pinCoreGeometry}
+          position={[0, 0.16, 0.087]}
+          raycast={NO_RAYCAST}
+        >
+          <meshBasicMaterial color="#f6f2e6" toneMapped={false} />
         </mesh>
-        <group ref={labelGroup} position={[0, 0.5, 0]}>
-          <mesh position-z={-0.012}>
+        <group ref={labelPanel} position={[0, 0.8, 0]}>
+          <mesh position-z={0.025} raycast={NO_RAYCAST}>
             <planeGeometry args={[1.48, 0.42]} />
-            <meshBasicMaterial color="#f4f0e3" transparent opacity={highlighted ? 1 : 0.9} toneMapped={false} />
+            <meshBasicMaterial
+              ref={labelMaterial}
+              color="#f4f0e3"
+              transparent
+              opacity={0.88}
+              toneMapped={false}
+            />
           </mesh>
           <Text
-            position-z={0.006}
+            position-z={0.055}
             fontSize={0.18}
             letterSpacing={0.07}
             color="#26312d"
             anchorX="center"
             anchorY="middle"
             material-toneMapped={false}
+            raycast={NO_RAYCAST}
           >
             {`${chapter}  ${label.toUpperCase()}`}
           </Text>
@@ -316,10 +383,17 @@ export function MichiganHub({ onSelect, transition }) {
   const [hoveredRegion, setHoveredRegion] = useState(null)
   useCursor(Boolean(hoveredRegion))
 
-  const { tilt, zoom, angle } = useControls('map', {
+  // HUD destination buttons call this so the matching pin lights up too.
+  useEffect(() => {
+    hubHoverSetter = setHoveredRegion
+    return () => { hubHoverSetter = null }
+  }, [])
+
+  const { tilt, zoom, angle, pinAngle } = useControls('map', {
     tilt: { value: 0, min: 0, max: 1.2, step: 0.01 },
     zoom: { value: 2, min: 0.4, max: 2, step: 0.01 },
     angle: { value: 0.91, min: -Math.PI / 2, max: Math.PI / 2, step: 0.01 },
+    pinAngle: { value: 0.77, min: -Math.PI, max: Math.PI, step: 0.01, label: 'pin angle' },
   })
   const mapTilt = new THREE.Quaternion().setFromAxisAngle(TILT_AXIS, tilt)
 
@@ -374,7 +448,7 @@ export function MichiganHub({ onSelect, transition }) {
 
       <group quaternion={mapTilt}>
       <group ref={mapRoot}>
-        <mesh rotation-x={-Math.PI / 2} position-y={-0.12} material={waterMaterial} receiveShadow>
+        <mesh rotation-x={-Math.PI / 2} position-y={-0.12} material={waterMaterial} receiveShadow raycast={NO_RAYCAST}>
           <planeGeometry args={[60, 60]} />
         </mesh>
         <gridHelper
@@ -384,51 +458,50 @@ export function MichiganHub({ onSelect, transition }) {
           rotation-y={-Math.PI / 4}
           material-transparent
           material-opacity={0.2}
+          raycast={NO_RAYCAST}
         />
         <group rotation-y={angle}>
         {landGeometries.map((geometry, index) => (
           <group key={index}>
-            <mesh
-              geometry={geometry}
-              material={landMaterials}
-              castShadow
-              receiveShadow
-              onPointerMove={(event) => {
-                event.stopPropagation()
-                const localPoint = event.object.worldToLocal(event.point.clone())
-                setHoveredRegion(destinationAt(localPoint, index))
-              }}
-              onPointerOut={() => setHoveredRegion(null)}
-              onClick={(event) => {
-                event.stopPropagation()
-                const localPoint = event.object.worldToLocal(event.point.clone())
-                onSelect(destinationAt(localPoint, index))
-              }}
-            />
-            <lineSegments geometry={landOutlines[index]} material={outlineMaterial} position-y={0.006} />
+            {/* land is scenery only — the markers are the sole click targets */}
+            <mesh geometry={geometry} material={landMaterials} castShadow receiveShadow raycast={NO_RAYCAST} />
+            <lineSegments geometry={landOutlines[index]} material={outlineMaterial} position-y={0.006} raycast={NO_RAYCAST} />
           </group>
         ))}
 
         <MapTrees />
 
-        <DestinationMarker
-          id="city"
-          chapter="01"
-          label="Detroit"
-          position={DESTINATION_POSITIONS.city}
-          highlighted={hoveredRegion === 'city'}
-          onHover={setHoveredRegion}
-          onSelect={onSelect}
-        />
-        <DestinationMarker
-          id="meadow"
-          chapter="02"
-          label="Up North"
-          position={DESTINATION_POSITIONS.meadow}
-          highlighted={hoveredRegion === 'meadow'}
-          onHover={setHoveredRegion}
-          onSelect={onSelect}
-        />
+        <group
+          onClick={(event) => {
+            event.stopPropagation()
+            onSelect(event.object.userData.destination)
+          }}
+          onPointerMove={(event) => {
+            event.stopPropagation()
+            setHoveredRegion(event.object.userData.destination)
+          }}
+          onPointerLeave={(event) => {
+            event.stopPropagation()
+            setHoveredRegion(null)
+          }}
+        >
+          <DestinationMarker
+            id="city"
+            chapter="01"
+            label="Detroit"
+            position={DESTINATION_POSITIONS.city}
+            highlighted={hoveredRegion === 'city'}
+            pinAngle={pinAngle}
+          />
+          <DestinationMarker
+            id="meadow"
+            chapter="02"
+            label="Up North"
+            position={DESTINATION_POSITIONS.meadow}
+            highlighted={hoveredRegion === 'meadow'}
+            pinAngle={pinAngle}
+          />
+        </group>
         </group>
       </group>
       </group>
