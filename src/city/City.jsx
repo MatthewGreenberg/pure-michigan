@@ -1,10 +1,12 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
+import { ClickHint, useClickCursor } from '../ClickHint.jsx'
+import { useControls } from 'leva'
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js'
 import * as THREE from 'three'
 import { uniforms as grassUniforms } from '../grass/material.js'
-import { sceneRendering } from '../sceneState.js'
+import { hubTransition, sceneRendering } from '../sceneState.js'
 import { CityBase } from './CityBase.jsx'
 import { makePeople, People } from './People.jsx'
 
@@ -178,6 +180,230 @@ function Ballfield() {
   )
 }
 
+// Comerica Park interaction — click the stadium and a home run flies out.
+// Hit target is one invisible solid cylinder over the stadium (marker
+// pattern from MichiganHub — raycasting the Draco stadium mesh would cost
+// per-pointer-move); handlers gate on hubTransition.to === 'city' because
+// the shared event root raycasts portal scenes even while they're hidden.
+// Balls are a module-singleton pool (React Compiler lint) of baseball.glb
+// clones with integrated per-ball physics: launch off home plate toward
+// center field, bounce with damping, roll to rest on the ground (or tumble
+// off the diorama edge). Resting balls persist until their slot is reused.
+const BALL_G = 6 // authored-units gravity, cartoon-slow so the arc reads
+const MAX_BALLS = 16 // oldest slot is recycled past this
+const TRAIL_N = 64 // per-ball trail ring-buffer size (leva trims the visible length)
+// live-tuned by the "baseball" leva folder (transient writes, no re-render)
+const ballParams = { r: 0.7, trailLen: 59, trailWidth: 0.61 }
+// home plate: FIELD_CENTER + 1.42·(0.707, 0.707) in authored xz (see Ballfield)
+const HOME_PLATE = new THREE.Vector3(-6.44, 0, -4.33)
+
+const balls = Array.from({ length: MAX_BALLS }, () => ({
+  root: new THREE.Group(), // baseball.glb clone parented here once loaded
+  vel: new THREE.Vector3(),
+  spinAxis: new THREE.Vector3(1, 0, 0),
+  spin: 0,
+  state: 'idle', // idle | fly | roll | rest
+  age: 0, // launch stamp — lowest age is recycled first
+  hist: Array.from({ length: TRAIL_N }, () => new THREE.Vector3()),
+  head: 0,
+}))
+// one instanced trail for the whole pool: shrinking translucent spheres over
+// each flying ball's recent positions — single draw call, no meshline dep
+const trail = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(1, 8, 6),
+  new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.01, depthWrite: false }),
+  MAX_BALLS * TRAIL_N
+)
+trail.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+trail.frustumCulled = false // instances span the tile; default bounds would cull them
+trail.raycast = () => null
+const ballRig = new THREE.Group()
+balls.forEach((b) => { b.root.visible = false; ballRig.add(b.root) })
+ballRig.add(trail)
+
+const pendingLaunches = { n: 0 }
+let launchStamp = 0
+const _v = new THREE.Vector3()
+const _m = new THREE.Matrix4()
+{
+  // park unused trail instances at scale 0
+  _m.makeScale(0, 0, 0)
+  for (let i = 0; i < MAX_BALLS * TRAIL_N; i++) trail.setMatrixAt(i, _m)
+}
+
+function launchBall(t) {
+  // free slot, else recycle the oldest
+  let b = balls.find((x) => x.state === 'idle')
+  if (!b) b = balls.reduce((a, x) => (x.age < a.age ? x : a))
+  b.age = ++launchStamp
+  b.state = 'fly'
+  b.root.visible = true
+  b.root.position.copy(HOME_PLATE)
+  b.root.position.y = 0.42 + ballParams.r // field surface + radius: starts airborne
+  // spray + power jitter: deterministic off timestamp + slot (no Math.random)
+  const seed = t * 1741.3 + b.age * 7.13
+  const r1 = Math.sin(seed) * 0.5 + 0.5
+  const r2 = Math.sin(seed * 2.71) * 0.5 + 0.5
+  const a = -0.75 * Math.PI + (r1 - 0.5) * 0.7 // center field is -x-z of home plate
+  const vh = 4.1 + r2 * 1.2
+  b.vel.set(Math.cos(a) * vh, 5.1 + r1 * 1.0, Math.sin(a) * vh) // apex ~2.7-3.6 — clears the stands
+  b.spinAxis.set(b.vel.z, 0, -b.vel.x).normalize() // backspin: up × flight dir
+  b.spin = 13
+  b.hist.forEach((h) => h.copy(b.root.position))
+  b.head = 0
+}
+
+function updateBalls(t, dt) {
+  for (let n = pendingLaunches.n; n > 0; n--) launchBall(t + n * 0.37)
+  pendingLaunches.n = 0
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i]
+    const p = b.root.position
+    if (b.state === 'fly') {
+      b.vel.y -= BALL_G * dt
+      p.addScaledVector(b.vel, dt)
+      b.root.rotateOnWorldAxis(b.spinAxis, b.spin * dt)
+      const onTile = Math.abs(p.x) < 15 && Math.abs(p.z) < 15
+      // only while descending — a big radius must not swallow the launch frame
+      if (onTile && p.y < ballParams.r && b.vel.y < 0) {
+        // damped bounce; low verticals hand off to rolling
+        p.y = ballParams.r
+        b.vel.y = -b.vel.y * 0.5
+        b.vel.x *= 0.72
+        b.vel.z *= 0.72
+        if (b.vel.y < 1.0) { b.vel.y = 0; b.state = 'roll' }
+      } else if (!onTile && p.y < -8) {
+        // sailed clear off the diorama — fell past the soil block
+        b.state = 'idle'
+        b.root.visible = false
+      }
+      b.head = (b.head + 1) % TRAIL_N
+      b.hist[b.head].copy(p)
+    } else if (b.state === 'roll') {
+      const damp = Math.exp(-2.3 * dt)
+      b.vel.x *= damp
+      b.vel.z *= damp
+      p.addScaledVector(b.vel, dt)
+      if (Math.abs(p.x) > 15 || Math.abs(p.z) > 15) {
+        // rolled off the tile edge — hand back to fly so it falls off the
+        // diorama instead of resting on an invisible floor in mid-air
+        b.state = 'fly'
+        b.hist.forEach((h) => h.copy(p)) // fresh trail, no stale flight streak
+      } else {
+        const speed = Math.hypot(b.vel.x, b.vel.z)
+        b.spinAxis.set(b.vel.z, 0, -b.vel.x).normalize()
+        b.root.rotateOnWorldAxis(b.spinAxis, (speed / ballParams.r) * dt)
+        if (speed < 0.12) b.state = 'rest'
+      }
+    }
+    // trail: full comet while flying/bouncing, collapsed otherwise
+    const flying = b.state === 'fly'
+    const len = ballParams.trailLen
+    for (let k = 0; k < TRAIL_N; k++) {
+      const s = flying && k < len ? ballParams.r * ballParams.trailWidth * (1 - k / len) : 0
+      _v.copy(b.hist[(b.head - k + TRAIL_N) % TRAIL_N])
+      _m.makeScale(s, s, s).setPosition(_v)
+      trail.setMatrixAt(i * TRAIL_N + k, _m)
+    }
+  }
+  trail.instanceMatrix.needsUpdate = true
+}
+
+function ComericaPark() {
+  const gl = useThree((s) => s.gl)
+  // suspends up to the app loading screen like the city GLB; same decoders
+  const { scene: ballScene } = useGLTF('/baseball.glb', true, false, (loader) =>
+    loader.setKTX2Loader(ktx2.detectSupport(gl))
+  )
+  const [hovered, setHovered] = useState(false)
+  useClickCursor(hovered)
+  // transient writes to the module singletons — no re-render (wind-folder pattern)
+  useControls('baseball', {
+    size: {
+      value: ballParams.r, min: 0.2, max: 2, step: 0.01,
+      onChange: (v) => {
+        ballParams.r = v
+        balls.forEach((b) => {
+          b.root.scale.setScalar(v)
+          // grounded balls track the new contact height instead of floating/sinking
+          if (b.state === 'roll' || b.state === 'rest') b.root.position.y = v
+        })
+      },
+    },
+    trailLen: {
+      value: ballParams.trailLen, min: 0, max: TRAIL_N, step: 1, label: 'trail length',
+      onChange: (v) => { ballParams.trailLen = v },
+    },
+    trailWidth: {
+      value: ballParams.trailWidth, min: 0.1, max: 1.5, step: 0.01, label: 'trail width',
+      onChange: (v) => { ballParams.trailWidth = v },
+    },
+    trailOpacity: {
+      value: trail.material.opacity, min: 0, max: 1, step: 0.01, label: 'trail opacity',
+      onChange: (v) => { trail.material.opacity = v },
+    },
+    trailColor: {
+      value: '#ffffff', label: 'trail color',
+      onChange: (v) => { trail.material.color.set(v) },
+    },
+  }, { collapsed: true })
+  useEffect(() => {
+    if (ballRig.userData.built) return // StrictMode/HMR guard
+    ballRig.userData.built = true
+    // normalize the GLB to a unit sphere centered on the pool group origin —
+    // ball size is then just root scale, so the leva knob is a scale write;
+    // unlit like the rest of the city (its baked texture carries the shading)
+    const src = ballScene.clone(true)
+    src.traverse((o) => {
+      if (o.isMesh) o.material = new THREE.MeshBasicMaterial({ map: o.material.map })
+    })
+    const sphere = new THREE.Box3().setFromObject(src).getBoundingSphere(new THREE.Sphere())
+    const s = 1 / sphere.radius
+    src.scale.multiplyScalar(s)
+    src.position.copy(sphere.center).multiplyScalar(-s)
+    balls.forEach((b) => {
+      b.root.add(src.clone(true))
+      b.root.scale.setScalar(ballParams.r)
+    })
+  }, [ballScene])
+  useFrame(({ clock }, rawDt) => {
+    if (!sceneRendering('city')) return
+    updateBalls(clock.elapsedTime, Math.min(rawDt, 0.05))
+  })
+  return (
+    <group>
+      {/* invisible click volume over the whole stadium (field + stands) */}
+      <mesh
+        position={[FIELD_CENTER[0], 1.2, FIELD_CENTER[2]]}
+        onClick={(event) => {
+          if (hubTransition.to !== 'city') return
+          event.stopPropagation()
+          pendingLaunches.n++ // launched on the next city frame
+        }}
+        onPointerOver={(event) => {
+          if (hubTransition.to !== 'city') return
+          event.stopPropagation()
+          setHovered(true)
+        }}
+        onPointerOut={() => setHovered(false)}
+      >
+        <cylinderGeometry args={[3.3, 3.3, 2.4, 12]} />
+        <meshBasicMaterial colorWrite={false} depthWrite={false} />
+      </mesh>
+      <primitive object={ballRig} />
+      {/* just above the Ballfield ellipse (authored y 0.416 + 0.012 hover) —
+          the field sits in a raised bowl, so anything lower is buried */}
+      <ClickHint
+        position={[FIELD_CENTER[0], 0.48, FIELD_CENTER[2]]}
+        radius={3.2}
+        scene="city"
+        hovered={hovered}
+        color="#eaf4f6"
+      />
+    </group>
+  )
+}
+
 // Detroit's people singleton — the system itself lives in People.jsx, shared
 // with Ann Arbor. Clump anchors [x, z, radius, count] in authored coords,
 // pulled from the GLB node table.
@@ -335,6 +561,7 @@ export function City() {
       {/* authored coords like PeopleMover — same 0.5 mount */}
       <group scale={0.5}>
         <Ballfield />
+        <ComericaPark />
       </group>
       <People people={detroitPeople} scene="city" />
       <PeopleMover />

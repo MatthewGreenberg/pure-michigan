@@ -11,19 +11,51 @@ import { CloudCover, CloudSheet } from './CloudCover.jsx'
 import { Grass } from './grass/Grass.jsx'
 import { MichiganHub, hoverHubDestination } from './MichiganHub.jsx'
 import { MittenLoader, MITTEN_PATH, UP_PATH, MICHIGAN_VIEWBOX } from './MittenLoader.jsx'
-import { Rocks } from './rocks/Rocks.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
 import { SoilBlock } from './SoilBlock.jsx'
 import { Sky } from './Sky.jsx'
 import { START_SCENE, hubTransition } from './sceneState.js'
-import { initOnDemandShadows } from './shadows.js'
+import { initOnDemandShadows, armShadows } from './shadows.js'
 import { skyMaterial, skyUniforms } from './skyMaterial.js'
 import { StylePass } from './StyleEffect.jsx'
 import { groundMaterial } from './grass/material.js'
 import { GRID, TILE } from './grass/constants.js'
 
 const TRANSITION_SECONDS = 1.6
+
+// Light rig for the meadow's Lambert-lit set dressing (cottage, loungers,
+// birds) — grass/ground/ocean materials ignore lights. Lived in Rocks.jsx
+// before the rocks were removed.
+function MeadowLights() {
+  const gl = useThree((s) => s.gl)
+  // shadow maps are on-demand — arm one render so the scenery shadows bake
+  useEffect(() => { armShadows(gl) }, [gl])
+  return (
+    <group>
+      <ambientLight intensity={1.25} color="#c8d0b5" />
+      <directionalLight
+        position={[6, 10, 4]}
+        intensity={1.15}
+        color="#ffe7bd"
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-camera-left={-12}
+        shadow-camera-right={12}
+        shadow-camera-top={12}
+        shadow-camera-bottom={-12}
+        shadow-camera-far={40}
+        shadow-bias={-0.0003}
+        shadow-normalBias={0.04}
+      />
+      {/* invisible shadow catcher — ground/grass materials can't receive shadows */}
+      <mesh rotation-x={-Math.PI / 2} position-y={0.005} receiveShadow>
+        <planeGeometry args={[GRID * TILE, GRID * TILE]} />
+        <shadowMaterial opacity={0.1} />
+      </mesh>
+    </group>
+  )
+}
 
 // Detroit's steely sky lives on its own material clone — each scene renders
 // its own sky into its own target, so no palette crossfade bookkeeping.
@@ -230,7 +262,10 @@ function Scenes({ activeScene, onSelect, children }) {
             <CloudSheet altitude={7.2} />
           </group>
         </>,
-        grassScene
+        grassScene,
+        // live-root-camera pointer compute (same as map/city portals) so the
+        // skipping-stone water clicks raycast with the real camera
+        { events: { compute: computePortalPointer } }
       )}
       {createPortal(
         <>
@@ -240,7 +275,11 @@ function Scenes({ activeScene, onSelect, children }) {
             <CloudSheet tint="steel" altitude={6.6} />
           </group>
         </>,
-        cityScene
+        cityScene,
+        // same live-root-camera pointer compute as the map portal — without it
+        // the portal raycasts with its stale creation-time camera copy and the
+        // Comerica Park click volume is unhittable
+        { events: { compute: computePortalPointer } }
       )}
       {createPortal(
         <>
@@ -251,7 +290,10 @@ function Scenes({ activeScene, onSelect, children }) {
             <CloudSheet tint="steel" altitude={6.6} />
           </group>
         </>,
-        annarborScene
+        annarborScene,
+        // live-root-camera pointer compute like every other portal — without
+        // it the Block M flag clicks raycast with a stale camera and miss
+        { events: { compute: computePortalPointer } }
       )}
       <ScreenQuad material={blendMaterial} raycast={NO_RAYCAST} />
     </>
@@ -260,8 +302,8 @@ function Scenes({ activeScene, onSelect, children }) {
 
 const LOCATIONS = [
   { id: 'city', name: 'Detroit' },
-  { id: 'meadow', name: 'Up North' },
   { id: 'annarbor', name: 'Ann Arbor' },
+  { id: 'meadow', name: 'Up North' },
 ]
 
 function MapPinIcon() {
@@ -272,6 +314,79 @@ function MapPinIcon() {
         <circle cx="12" cy="10" r="2.25" />
       </svg>
     </span>
+  )
+}
+
+function AboutCard() {
+  const [isOpen, setIsOpen] = useState(false)
+  const toggleRef = useRef(null)
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+
+    const closeCard = (event) => {
+      if (event.type === 'click' && toggleRef.current?.contains(event.target)) return
+      if (event.type === 'keydown' && event.key !== 'Escape') return
+      setIsOpen(false)
+    }
+
+    document.addEventListener('click', closeCard)
+    window.addEventListener('keydown', closeCard)
+    return () => {
+      document.removeEventListener('click', closeCard)
+      window.removeEventListener('keydown', closeCard)
+    }
+  }, [isOpen])
+
+  return (
+    <div className={`hud-about${isOpen ? ' is-open' : ''}`}>
+      <button
+        ref={toggleRef}
+        className="hud-about-toggle"
+        type="button"
+        aria-label={isOpen ? 'Close about card' : 'Open about card'}
+        aria-expanded={isOpen}
+        aria-controls="about-card"
+        onClick={() => setIsOpen((open) => !open)}
+      >
+        <span aria-hidden="true">?</span>
+      </button>
+      <section
+        className="hud-about-card"
+        id="about-card"
+        aria-label="About this experiment"
+        aria-hidden={!isOpen}
+      >
+        <p className="hud-about-eyebrow">Pure Michigan</p>
+        <p className="hud-about-credit">
+          <span>A WebGL Experiment</span>
+          <span>Three regions, three art styles.</span>
+          <span>By Matt Greenberg</span>
+        </p>
+        <div className="hud-about-socials" aria-label="Matt Greenberg on social media">
+          <a
+            className="hud-social-link hud-social-x"
+            href="https://x.com/McGreenBeats"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Matt Greenberg on X"
+            tabIndex={isOpen ? 0 : -1}
+          >
+            <span aria-hidden="true">X</span>
+          </a>
+          <a
+            className="hud-social-link hud-social-linkedin"
+            href="https://www.linkedin.com/in/mattcgreenberg/"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Matt Greenberg on LinkedIn"
+            tabIndex={isOpen ? 0 : -1}
+          >
+            <span aria-hidden="true">in</span>
+          </a>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -293,6 +408,7 @@ function Hud({ activeScene, onSelect }) {
           <path d={MITTEN_PATH} />
         </svg>
       </button>
+      <AboutCard />
       <div className={`hud-island${onMap ? ' is-map' : ' is-scene'}`}>
         <nav
           className="hud-island-map"
@@ -356,7 +472,7 @@ export default function App() {
 
   return (
     <main className="scene">
-      <Leva collapsed />
+      <Leva collapsed hidden={!new URLSearchParams(window.location.search).has('debug')} />
       {/* antialias off: only fullscreen quads hit the canvas — the scene AA
           is the samples:4 on the two FBOs in Scenes */}
       <Canvas shadows dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }}>
@@ -364,7 +480,7 @@ export default function App() {
           <Camera scene={activeScene} />
           <Scenes activeScene={activeScene} onSelect={setActiveScene}>
             <Grass />
-            <Rocks />
+            <MeadowLights />
             <Ocean />
             <Scenery />
             <Birds />

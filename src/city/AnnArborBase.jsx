@@ -177,19 +177,17 @@ const baseMaterial = new THREE.ShaderMaterial({
   `,
 })
 
-// The official mark stays a transparent source image, but mipmapping keeps it
-// crisp as the camera changes scale. Low-opacity earth/maize tint makes the
-// three marks feel printed into the living cross-section instead of badged on.
+// Shape from m.png (maize on black); alphaMap uses the red channel so the
+// material color alone sets the inlay tint — light gray, printed into the cut.
 const mTexture = new THREE.TextureLoader().load('/m.png')
-mTexture.colorSpace = THREE.SRGBColorSpace
 mTexture.minFilter = THREE.LinearMipmapLinearFilter
 mTexture.magFilter = THREE.LinearFilter
 const markGeometry = new THREE.PlaneGeometry(0.82, 0.555)
 const markMaterial = new THREE.MeshBasicMaterial({
-  map: mTexture,
-  color: '#9b9160',
+  color: '#c8c8c8',
+  alphaMap: mTexture,
   transparent: true,
-  opacity: 0.46,
+  opacity: 0.3,
   depthWrite: false,
 })
 

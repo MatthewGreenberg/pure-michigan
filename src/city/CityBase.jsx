@@ -3,11 +3,8 @@ import * as THREE from 'three'
 const SIZE = 15
 const DEPTH = 2
 const TOP_Y = -0.1
-const HALF = SIZE / 2
-
 // Urban fill cross-section: compacted crushed stone, concrete fines, brick
-// chips, and darker settled bands. The higher-frequency aggregate is painted
-// into the face; instanced gravel below adds real silhouette and facet changes.
+// chips, and darker settled bands — all painted into the face in-shader.
 const baseMaterial = new THREE.ShaderMaterial({
   vertexShader: /* glsl */ `
     varying vec3 vPos;
@@ -138,105 +135,15 @@ const baseMaterial = new THREE.ShaderMaterial({
   `,
 })
 
-function mulberry32(seed) {
-  return function () {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-const gravelGeometry = new THREE.IcosahedronGeometry(1, 1)
-const gravelMaterial = new THREE.MeshLambertMaterial({ flatShading: true, vertexColors: true })
-const rubbleGeometry = new THREE.DodecahedronGeometry(1, 1)
-const rubbleMaterial = new THREE.MeshLambertMaterial({ flatShading: true, vertexColors: true })
-
-const gravel = new THREE.InstancedMesh(gravelGeometry, gravelMaterial, 260)
-const rubble = new THREE.InstancedMesh(rubbleGeometry, rubbleMaterial, 54)
-gravel.frustumCulled = false
-rubble.frustumCulled = false
-
-const dummy = new THREE.Object3D()
-const tint = new THREE.Color()
-
-function setDebrisInstance(mesh, index, face, tangent, y, radius, rand, coarse) {
-  const faceCoord = HALF - radius * (coarse ? 0.22 : 0.1)
-  if (face === 'x') {
-    dummy.position.set(faceCoord, y, tangent)
-    dummy.scale.set(radius * (0.48 + rand() * 0.26), radius * (0.72 + rand() * 0.5), radius)
-  } else {
-    dummy.position.set(tangent, y, faceCoord)
-    dummy.scale.set(radius, radius * (0.72 + rand() * 0.5), radius * (0.48 + rand() * 0.26))
-  }
-  dummy.rotation.set(rand() * Math.PI, rand() * Math.PI, rand() * Math.PI)
-  dummy.updateMatrix()
-  mesh.setMatrixAt(index, dummy.matrix)
-}
-
-function populateDebris() {
-  const rand = mulberry32(0xd37a017)
-  const stoneA = new THREE.Color('#77766f')
-  const stoneB = new THREE.Color('#b1a99b')
-  const dark = new THREE.Color('#50545a')
-  const brick = new THREE.Color('#854837')
-
-  for (let i = 0; i < gravel.count; i++) {
-    const face = i % 2 ? 'x' : 'z'
-    const isDark = rand() < 0.045
-    let radius = 0.035 + Math.pow(rand(), 1.8) * 0.12
-    if (isDark) radius *= 0.82
-    const tangent = (rand() * 2 - 1) * (HALF - 0.12)
-    const y = TOP_Y - 0.1 - rand() * (DEPTH - 0.18)
-    setDebrisInstance(gravel, i, face, tangent, y, radius, rand, false)
-
-    tint.lerpColors(stoneA, stoneB, rand())
-    if (isDark) tint.lerp(dark, 0.72)
-    if (rand() > 0.965) tint.lerp(brick, 0.82)
-    tint.offsetHSL((rand() - 0.5) * 0.025, (rand() - 0.5) * 0.04, (rand() - 0.5) * 0.1)
-    gravel.setColorAt(i, tint)
-  }
-
-  for (let i = 0; i < rubble.count; i++) {
-    const face = i % 2 ? 'x' : 'z'
-    const isDark = rand() < 0.16
-    let radius = 0.14 + Math.pow(rand(), 1.35) * 0.27
-    if (isDark) radius *= 0.84
-    let tangent = (rand() * 2 - 1) * (HALF - radius)
-    let y = TOP_Y - 0.24 - rand() * (DEPTH - 0.42)
-
-    // A few rubble clusters collect along the bottom lip and visibly break it.
-    if (i < 18) {
-      tangent = (Math.floor(i / 3) / 5 * 2 - 1) * (HALF - 0.8) + (rand() - 0.5) * 0.75
-      y = TOP_Y - DEPTH + radius * (0.3 + rand() * 0.35)
-    }
-
-    setDebrisInstance(rubble, i, face, tangent, y, radius, rand, true)
-    tint.lerpColors(stoneA, stoneB, 0.2 + rand() * 0.8)
-    if (isDark) tint.lerp(dark, 0.76)
-    if (rand() > 0.88) tint.lerp(brick, 0.68)
-    tint.offsetHSL((rand() - 0.5) * 0.02, (rand() - 0.5) * 0.035, (rand() - 0.5) * 0.08)
-    rubble.setColorAt(i, tint)
-  }
-
-  gravel.instanceMatrix.needsUpdate = true
-  rubble.instanceMatrix.needsUpdate = true
-  gravel.instanceColor.needsUpdate = true
-  rubble.instanceColor.needsUpdate = true
-}
-
-populateDebris()
-
 export function CityBase() {
   return (
     <group>
+      {/* lights stay: City.jsx gives the RenCen a Lambert material that needs them */}
       <ambientLight intensity={1.3} color="#c7cbc8" />
       <directionalLight position={[8, 10, 7]} intensity={1.2} color="#ffe8c9" />
       <mesh material={baseMaterial} position={[0, TOP_Y - DEPTH / 2, 0]}>
         <boxGeometry args={[SIZE, DEPTH, SIZE]} />
       </mesh>
-      <primitive object={gravel} />
-      <primitive object={rubble} />
     </group>
   )
 }

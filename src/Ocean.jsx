@@ -1,6 +1,10 @@
+import { useState } from 'react'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
+import { useClickCursor } from './ClickHint.jsx'
 import { GRID, TILE } from './grass/constants.js'
 import { uniforms as grassUniforms } from './grass/material.js'
+import { hubTransition, sceneRendering } from './sceneState.js'
 import { coastUniforms, FIELD_HALF, LAND_EDGE_Z, WATERLINE_Z } from './coast.js'
 
 // The ocean is clipped to the tile footprint: exactly as wide as the field,
@@ -13,6 +17,20 @@ const DEPTH = FIELD_HALF + INNER_Z
 const CENTER_Z = INNER_Z - DEPTH / 2
 const CENTER_Y = -0.02
 
+// Skipping-stone splash ripples: a small ring buffer of (x, z, birthTime,
+// amplitude) the fragment shader draws as expanding fading rings. Birth
+// times are stamped from the shared uTime (real elapsed seconds) so JS and
+// GLSL agree on age without a second clock.
+const RIPPLE_N = 10
+const rippleUniform = {
+  value: Array.from({ length: RIPPLE_N }, () => new THREE.Vector4(0, 0, -100, 0)),
+}
+let rippleCursor = 0
+function spawnRipple(x, z, amp) {
+  rippleUniform.value[rippleCursor].set(x, z, grassUniforms.uTime.value, amp)
+  rippleCursor = (rippleCursor + 1) % RIPPLE_N
+}
+
 // Original painted-coast shader: dry sand → wet sand → scalloped foam →
 // banded turquoise → deep teal, with the same wave and sparkle treatment.
 const material = new THREE.ShaderMaterial({
@@ -23,6 +41,8 @@ const material = new THREE.ShaderMaterial({
     uSheen: grassUniforms.uSheen,
     uSandA: coastUniforms.uSandA,
     uSandB: coastUniforms.uSandB,
+    uRipples: rippleUniform,
+    uHover: { value: 0 }, // 0..1 — whole water band lightens while hovered
   },
   vertexShader: /* glsl */ `
     varying vec3 vPos;
@@ -43,6 +63,8 @@ const material = new THREE.ShaderMaterial({
     uniform float uSheen;
     uniform vec3 uSandA;
     uniform vec3 uSandB;
+    uniform vec4 uRipples[${RIPPLE_N}]; // x, z, birth uTime, amplitude
+    uniform float uHover;
     varying vec3 vPos;
 
     float hash(vec2 p) {
@@ -125,6 +147,25 @@ const material = new THREE.ShaderMaterial({
       // out to white and bled (via bloom) over the grass edge.
       color = mix(color, sheenColor, min(sheen * uSheen * 0.6, 0.7) * mix(0.35, 1.0, waterMix));
 
+      // Hover affordance: the whole clickable water band lifts toward a paler
+      // turquoise while the cursor is over it (sand masked out)
+      color = mix(color, color * 1.16 + vec3(0.02, 0.05, 0.05), uHover * waterMix);
+
+      // Skipping-stone rings: expanding foam circles + a brief splash core at
+      // each touch point, water-only so beach clicks never paint the sand.
+      for (int i = 0; i < ${RIPPLE_N}; i++) {
+        vec4 rp = uRipples[i];
+        float age = t - rp.z;
+        if (age >= 0.0 && age < 1.6 && rp.w > 0.0) {
+          float fade = 1.0 - age / 1.6;
+          float rd = length(vPos.xz - rp.xy);
+          float ring = 1.0 - smoothstep(0.02, 0.13 + age * 0.05, abs(rd - (0.1 + age * 1.05)));
+          float splash = (1.0 - smoothstep(0.0, 0.22, rd)) * smoothstep(0.3, 0.0, age);
+          color = mix(color, vec3(0.97, 0.97, 0.9),
+            min((ring * fade * fade + splash) * rp.w, 1.0) * waterMix);
+        }
+      }
+
       // Sparse pinpricks ride inside the same moving field and only appear on
       // its brightest shoulders. Their HDR lift lets the bloom pass catch them.
       vec2 sparkleCoord = gustCoord * 5.0;
@@ -150,15 +191,129 @@ const material = new THREE.ShaderMaterial({
   `,
 })
 
+// Skipping stones — click the water and a stone whips out from the camp,
+// skips with a ripple ring at each touch, then sinks with a plunk. Module-
+// singleton pool like the city's baseballs (React Compiler lint); the first
+// water contact lands exactly on the click point (throw solved analytically
+// from the flight time). Stones don't cast shadow — the ocean is unlit and
+// a moving caster would need on-demand shadow re-arming every frame.
+const NO_RAYCAST = () => null
+const STONE_N = 8
+const STONE_G = 7
+const THROW_FROM = new THREE.Vector3(2.35, 0.5, -3.95) // beside the beach camp
+const stoneGeometry = new THREE.SphereGeometry(1, 10, 8)
+stoneGeometry.scale(0.16, 0.055, 0.13) // flat skipper baked into the geometry
+const stoneMaterial = new THREE.MeshLambertMaterial({ color: '#8a857a' })
+const stones = Array.from({ length: STONE_N }, () => {
+  const mesh = new THREE.Mesh(stoneGeometry, stoneMaterial)
+  mesh.visible = false
+  mesh.raycast = NO_RAYCAST
+  return { mesh, vel: new THREE.Vector3(), state: 'idle', age: 0 }
+})
+const stoneRig = new THREE.Group()
+stones.forEach((s) => stoneRig.add(s.mesh))
+let throwStamp = 0
+
+function throwStone(target) {
+  let s = stones.find((x) => x.state === 'idle')
+  if (!s) s = stones.reduce((a, x) => (x.age < a.age ? x : a))
+  s.age = ++throwStamp
+  s.state = 'fly'
+  s.mesh.visible = true
+  s.mesh.position.copy(THROW_FROM)
+  // aim so the first descent crosses water level right at the click point
+  const dx = target.x - THROW_FROM.x
+  const dz = target.z - THROW_FROM.z
+  const t1 = Math.max(Math.hypot(dx, dz) / 5.5, 0.3) // ~5.5 u/s sidearm throw
+  s.vel.set(dx / t1, (CENTER_Y - THROW_FROM.y) / t1 + 0.5 * STONE_G * t1, dz / t1)
+}
+
+function updateStones(dt) {
+  for (const s of stones) {
+    if (s.state === 'idle') continue
+    const p = s.mesh.position
+    s.vel.y -= (s.state === 'sink' ? 2.5 : STONE_G) * dt // water drag on the way down
+    p.addScaledVector(s.vel, dt)
+    s.mesh.rotation.y += 10 * dt // sidearm spin
+    if (s.state === 'fly' && s.vel.y < 0 && p.y < CENTER_Y) {
+      const onWater = p.z < WATERLINE_Z + 0.2 && p.z > -FIELD_HALF && Math.abs(p.x) < FIELD_HALF
+      if (onWater) {
+        p.y = CENTER_Y
+        s.vel.y *= -0.55
+        s.vel.x *= 0.8
+        s.vel.z *= 0.8
+        if (s.vel.y < 0.5) {
+          // out of juice: plunk under with the big ring
+          s.state = 'sink'
+          s.vel.multiplyScalar(0.4)
+          spawnRipple(p.x, p.z, 1.0)
+        } else {
+          spawnRipple(p.x, p.z, 0.55)
+        }
+      } else if (p.z >= WATERLINE_Z + 0.2) {
+        // clipped the beach: dead thud into the sand, no ripple
+        s.state = 'sink'
+        s.vel.multiplyScalar(0.25)
+      }
+      // off-tile contacts fall past the diorama edge instead
+    }
+    if (p.y < -2.5 || Math.abs(p.x) > FIELD_HALF + 1 || p.z < -FIELD_HALF - 1) {
+      s.state = 'idle'
+      s.mesh.visible = false
+    }
+  }
+}
+
+function SkippingStones() {
+  const [hovered, setHovered] = useState(false)
+  useClickCursor(hovered)
+  useFrame((_, rawDt) => {
+    if (!sceneRendering('meadow')) return
+    const dt = Math.min(rawDt, 0.05)
+    updateStones(dt)
+    const u = material.uniforms.uHover
+    u.value += ((hovered ? 1 : 0) - u.value) * Math.min(dt * 8, 1)
+  })
+  return (
+    <group>
+      {/* invisible click target over the water band; handlers gate on the
+          meadow being the destination — the shared event root raycasts
+          portal scenes even while they're hidden (see MichiganHub markers) */}
+      <mesh
+        rotation-x={-Math.PI / 2}
+        position={[0, 0.02, (WATERLINE_Z - FIELD_HALF) / 2]}
+        onClick={(event) => {
+          if (hubTransition.to !== 'meadow') return
+          event.stopPropagation()
+          throwStone(event.point)
+        }}
+        onPointerOver={(event) => {
+          if (hubTransition.to !== 'meadow') return
+          event.stopPropagation()
+          setHovered(true)
+        }}
+        onPointerOut={() => setHovered(false)}
+      >
+        <planeGeometry args={[WIDTH, FIELD_HALF + WATERLINE_Z]} />
+        <meshBasicMaterial colorWrite={false} depthWrite={false} />
+      </mesh>
+      <primitive object={stoneRig} />
+    </group>
+  )
+}
+
 export function Ocean() {
   return (
-    <mesh
-      material={material}
-      rotation-x={-Math.PI / 2}
-      position={[0, CENTER_Y, CENTER_Z]}
-      frustumCulled={false}
-    >
-      <planeGeometry args={[WIDTH, DEPTH]} />
-    </mesh>
+    <group>
+      <mesh
+        material={material}
+        rotation-x={-Math.PI / 2}
+        position={[0, CENTER_Y, CENTER_Z]}
+        frustumCulled={false}
+      >
+        <planeGeometry args={[WIDTH, DEPTH]} />
+      </mesh>
+      <SkippingStones />
+    </group>
   )
 }

@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import { GRID, TILE } from '../grass/constants.js'
 
-// World-space occupancy mask over the whole field: 1 where a rock sits, 0
-// elsewhere. The grass vertex shader samples it and collapses masked blades.
-// Lives in its own module so grass/material.js can import it without pulling
-// in the Rocks component (no cycle: this file only needs constants).
+// World-space occupancy mask over the whole field: 1 where scenery sits, 0
+// elsewhere. The grass vertex shader samples it and collapses masked blades
+// so grass doesn't grow through the cottage / lounging-scene footprints.
+// (The rocks that originally shared this mask are gone.)
 const SIZE = 256
 const FIELD = GRID * TILE
 const data = new Uint8Array(SIZE * SIZE)
@@ -14,36 +14,15 @@ rockMaskTexture.magFilter = THREE.LinearFilter
 rockMaskTexture.minFilter = THREE.LinearFilter
 rockMaskTexture.needsUpdate = true
 
-// grass shortens in a ring extending past each rock, so blades ramp up
+// grass shortens in a ring extending past each footprint, so blades ramp up
 // around the base instead of standing full-height at the rim
 const RING = 1.6
 
 // footprints: [{ x, z, r }] in world units. Solid kill inside 0.8r, then a
-// soft fade out to RING*r — blades at the rock's edge are ~15% height and
-// grow back to full across the surrounding ring.
-// Rocks re-scatter on every slider change; scenery (house, loungers) is
-// static. Keep both lists so a rock re-stamp doesn't wipe the scenery kills.
-let rockFootprints = []
-let sceneryFootprints = []
-
-export function stampRockMask(footprints) {
-  rockFootprints = footprints
-  bake()
-}
-
+// soft fade out to RING*r.
 export function stampSceneryMask(footprints) {
-  sceneryFootprints = footprints
-  bake()
-}
-
-// Rocks use this to avoid spawning inside the house / lounging scene.
-export function overlapsScenery(x, z, r) {
-  return sceneryFootprints.some((f) => Math.hypot(x - f.x, z - f.z) < f.r + r)
-}
-
-function bake() {
   data.fill(0)
-  for (const { x, z, r } of [...rockFootprints, ...sceneryFootprints]) {
+  for (const { x, z, r } of footprints) {
     const cx = (x / FIELD + 0.5) * SIZE
     const cz = (z / FIELD + 0.5) * SIZE
     const pr = ((r * RING) / FIELD) * SIZE

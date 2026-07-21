@@ -6,7 +6,7 @@ import { sceneRendering } from './sceneState.js'
 
 // Static set dressing: a gabled cottage above the dune and a lounging scene
 // on the sand. All primitives/extrudes + procedural Lambert materials, lit by
-// the rig in Rocks.jsx and painted over by the same optional style pass.
+// the MeadowLights rig in App.jsx and painted over by the same optional style pass.
 
 // ponytail: fixed placements, no leva folder — add one if these ever need tuning
 // House on grass above the dune, camp on the dry-sand band before the

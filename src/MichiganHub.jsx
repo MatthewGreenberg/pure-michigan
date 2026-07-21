@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useControls } from 'leva'
-import { Text, useCursor } from '@react-three/drei'
+import { Text } from '@react-three/drei'
+import { useClickCursor } from './ClickHint.jsx'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { MITTEN_PATH, UP_PATH } from './MittenLoader.jsx'
@@ -103,8 +104,8 @@ function scatterTrees(poly, count, seed, hMin, hMax) {
 const landGeometries = [buildLandGeometry(UP_PATH), buildLandGeometry(MITTEN_PATH)]
 const landOutlines = landGeometries.map((geometry) => new THREE.EdgesGeometry(geometry, 28))
 const landMaterials = [
-  new THREE.MeshStandardMaterial({ color: '#c5d6b5', roughness: 0.96, metalness: 0 }),
-  new THREE.MeshStandardMaterial({ color: '#7f8e82', roughness: 1, metalness: 0 }),
+  new THREE.MeshStandardMaterial({ color: '#b4c79c', roughness: 0.96, metalness: 0 }),
+  new THREE.MeshStandardMaterial({ color: '#75847a', roughness: 1, metalness: 0 }),
 ]
 const outlineMaterial = new THREE.LineBasicMaterial({ color: '#667268', transparent: true, opacity: 0.78 })
 // Shore mask: white blurred land fill minus sharp black land fill = a rim fading
@@ -205,7 +206,7 @@ const waterMaterial = new THREE.ShaderMaterial({
       // faint survey grid under the surface (~7% opacity)
       vec2 g = abs(fract(p / 2.4) - 0.5);
       float grid = 1.0 - smoothstep(0.012, 0.03, min(g.x, g.y));
-      col = mix(col, vec3(0.78, 0.83, 0.87), grid * 0.07);
+      col = mix(col, vec3(0.78, 0.83, 0.87), grid * 0.02);
       // shore mask ramps ~0.5 at the waterline down to 0 offshore — a distance proxy
       float shore = texture2D(uShore, (p - uShoreMin) / uShoreRange).r;
       // darken toward the coastline so the cream landmass silhouette reads harder
@@ -305,8 +306,22 @@ function makeTreeInstances(trees) {
   })
   mesh.raycast = NO_RAYCAST
   mesh.frustumCulled = false // instance bounds aren't tracked; map fills the view
+  mesh.castShadow = true // static casters — the on-demand shadow map covers them for free
   return mesh
 }
+
+// contact blob under each marker (Birds.jsx pattern) — grounds the preview on the land top
+const blobCanvas = document.createElement('canvas')
+blobCanvas.width = blobCanvas.height = 64
+const blobCtx = blobCanvas.getContext('2d')
+const blobGrd = blobCtx.createRadialGradient(32, 32, 0, 32, 32, 32)
+blobGrd.addColorStop(0, 'rgba(30,36,28,0.42)')
+blobGrd.addColorStop(0.5, 'rgba(30,36,28,0.2)')
+blobGrd.addColorStop(1, 'rgba(30,36,28,0)')
+blobCtx.fillStyle = blobGrd
+blobCtx.fillRect(0, 0, 64, 64)
+const blobTexture = new THREE.CanvasTexture(blobCanvas)
+const blobGeometry = new THREE.CircleGeometry(1.1, 32)
 const mapTreesMesh = makeTreeInstances(MAP_TREES)
 const northTreesMesh = makeTreeInstances(NORTH_TREES)
 
@@ -332,11 +347,16 @@ const flagMaterial = new THREE.ShaderMaterial({
     uTime: grassUniforms.uTime,
     uMap: { value: flagTexture },
     uSpeed: { value: 1 },
+    // 0..1 amplitude-only excitement (Block M formation). Safe to animate:
+    // amplitude has no phase term, unlike uSpeed whose ramp teleports the
+    // cloth (phase = uTime * uSpeed with a large uTime).
+    uExcite: { value: 0 },
   },
   side: THREE.DoubleSide,
   vertexShader: /* glsl */ `
     uniform float uTime;
     uniform float uSpeed;
+    uniform float uExcite;
     varying vec2 vUv;
     varying float vShade;
     void main() {
@@ -345,7 +365,10 @@ const flagMaterial = new THREE.ShaderMaterial({
       float t = uTime * 4.6 * uSpeed;
       float phase = uv.x * 7.0 - t;
       float wave = sin(phase) * 0.7 + sin(uv.x * 12.0 - t * 1.6 + 1.7) * 0.3;
-      p.z += wave * 0.085 * uv.x;
+      p.z += wave * 0.085 * (1.0 + uExcite * 0.45) * uv.x;
+      // fast flutter ripple at CONSTANT speed — phase-continuous while
+      // uExcite fades in/out
+      p.z += sin(uv.x * 16.0 - uTime * 7.0) * 0.015 * uExcite * uv.x;
       p.y += sin(uv.x * 6.0 - t * 0.9) * 0.02 * uv.x;
       // fake cloth shading off the wave slope
       vShade = cos(phase) * uv.x;
@@ -426,6 +449,8 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
   const pinCore = useRef(null)
   const labelPanel = useRef(null)
   const labelMaterial = useRef(null)
+  const labelText = useRef(null)
+  const blobMaterial = useRef(null)
 
   useFrame(({ clock, camera, gl }, rawDt) => {
     if (!sceneRendering('map')) return
@@ -445,28 +470,31 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
     const wave = Math.sin(clock.elapsedTime * 2.6)
     const pulseWave = (wave + 1) * 0.5
 
-    if (preview.current) preview.current.scale.setScalar(1 + hover * 0.115)
+    if (preview.current) preview.current.scale.setScalar(1 + hover * 0.16)
     if (pointLight.current) pointLight.current.intensity = hover * 11
     if (areaGlow.current) areaGlow.current.scale.setScalar(0.82 + hover * 0.18)
     if (areaGlowMaterial.current) areaGlowMaterial.current.opacity = 0.018 + hover * 0.35
+    if (blobMaterial.current) blobMaterial.current.opacity = 0.55 + hover * 0.3
     if (pulse.current) {
-      const scale = 1 + pulseWave * (0.055 + hover * 0.12)
+      // idle ring is near-static; the pulse animation wakes on hover
+      const scale = 1 + pulseWave * (0.02 + hover * 0.2)
       pulse.current.scale.setScalar(scale)
     }
     if (pulseMaterial.current) {
-      pulseMaterial.current.opacity = 0.48 + hover * 0.42 - pulseWave * hover * 0.12
+      pulseMaterial.current.opacity = 0.16 + hover * 0.55 - pulseWave * hover * 0.15
     }
     if (pinBillboard.current) {
-      pinBillboard.current.position.y = 1.12 + hover * 0.12 + wave * (0.012 + hover * 0.012)
-      pinBillboard.current.scale.setScalar(0.8 + hover * 0.08)
+      pinBillboard.current.position.y = 1.12 + hover * 0.24 + wave * (0.006 + hover * 0.012)
+      pinBillboard.current.scale.setScalar(0.8 + hover * 0.18)
     }
-    if (pinMaterial.current) pinMaterial.current.emissiveIntensity = 0.06 + hover * 0.42
+    if (pinMaterial.current) pinMaterial.current.emissiveIntensity = hover * 0.48
     if (pinCore.current) pinCore.current.scale.setScalar(1 + hover * 0.13)
     if (labelPanel.current) {
-      labelPanel.current.position.y = 0.8 + hover * 0.035
-      labelPanel.current.scale.setScalar(1 + hover * 0.025)
+      labelPanel.current.position.y = 0.8 + hover * 0.05
+      labelPanel.current.scale.setScalar(1 + hover * 0.04)
     }
-    if (labelMaterial.current) labelMaterial.current.opacity = 0.88 + hover * 0.12
+    if (labelMaterial.current) labelMaterial.current.opacity = 0.5 + hover * 0.5
+    if (labelText.current?.material) labelText.current.material.opacity = 0.55 + hover * 0.45
   }, BEFORE_FBO)
 
   return (
@@ -491,6 +519,20 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
         <meshBasicMaterial colorWrite={false} depthWrite={false} />
       </mesh>
       <mesh
+        rotation-x={-Math.PI / 2}
+        position-y={0.402}
+        geometry={blobGeometry}
+        raycast={NO_RAYCAST}
+      >
+        <meshBasicMaterial
+          ref={blobMaterial}
+          map={blobTexture}
+          transparent
+          opacity={0.55}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh
         ref={areaGlow}
         rotation-x={-Math.PI / 2}
         position-y={0.405}
@@ -512,7 +554,7 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
           ref={pulseMaterial}
           color={MARKER_COLORS[id].pulse}
           transparent
-          opacity={0.48}
+          opacity={0.16}
           depthWrite={false}
           toneMapped={false}
         />
@@ -523,7 +565,7 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
             ref={pinMaterial}
             color={MARKER_COLORS[id].pin}
             emissive={MARKER_COLORS[id].pinEmissive}
-            emissiveIntensity={0.06}
+            emissiveIntensity={0}
             roughness={0.58}
             metalness={0.02}
           />
@@ -543,11 +585,12 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
               ref={labelMaterial}
               color="#f4f0e3"
               transparent
-              opacity={0.88}
+              opacity={0.5}
               toneMapped={false}
             />
           </mesh>
           <Text
+            ref={labelText}
             position-z={0.055}
             fontSize={0.18}
             letterSpacing={0.07}
@@ -568,7 +611,7 @@ function DestinationMarker({ id, label, position, highlighted, pinAngle = 0 }) {
 export function MichiganHub({ onSelect, transition }) {
   const mapRoot = useRef(null)
   const [hoveredRegion, setHoveredRegion] = useState(null)
-  useCursor(Boolean(hoveredRegion))
+  useClickCursor(Boolean(hoveredRegion))
 
   // HUD destination buttons call this so the matching pin lights up too.
   useEffect(() => {
@@ -668,13 +711,16 @@ export function MichiganHub({ onSelect, transition }) {
               // gate on the map being the current destination — you have to go
               // back to the map to pick a new scene
               onClick={(event) => {
-                event.stopPropagation()
+                // gate BEFORE stopPropagation: while a diorama shows, a hidden
+                // marker cylinder nearer along the ray must not swallow clicks
+                // meant for in-scene targets (e.g. Comerica Park)
                 if (transition.to !== 'map') return
+                event.stopPropagation()
                 onSelect(event.object.userData.destination)
               }}
               onPointerMove={(event) => {
-                event.stopPropagation()
                 if (transition.to !== 'map') return
+                event.stopPropagation()
                 setHoveredRegion(event.object.userData.destination)
               }}
               onPointerLeave={(event) => {
