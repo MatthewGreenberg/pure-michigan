@@ -49,7 +49,9 @@ export function MittenLoader() {
   const { active, progress } = useProgress()
   const [elapsed, setElapsed] = useState(0)
   const [hidden, setHidden] = useState(false)
-  const done = elapsed >= MIN_MS && !active && progress >= 100
+  // __scenePainted flips in App's Scenes loop once a full frame has actually
+  // hit the canvas — without it the fade lands on the shader-compile black gap
+  const done = elapsed >= MIN_MS && !active && progress >= 100 && !!window.__scenePainted
 
   useEffect(() => {
     if (done) {
@@ -65,8 +67,11 @@ export function MittenLoader() {
 
   if (hidden) return null
 
-  // fill never outruns real progress, and takes at least MIN_MS to top out
-  const pct = Math.min(progress, (elapsed / MIN_MS) * 100)
+  // useProgress jumps in big steps (two assets) and can sit on one number for
+  // seconds on a slow network — creep the cap asymptotically toward 99 so the
+  // fill never looks stalled; 100 waits for real done (loaded + first paint)
+  const ceil = progress >= 100 ? 100 : progress + (99 - progress) * (1 - Math.exp(-elapsed / 9000))
+  const pct = done ? 100 : Math.min((elapsed / MIN_MS) * 100, ceil, 99)
   const fillTop = VB_TOP + (1 - pct / 100) * VB_H
 
   return (

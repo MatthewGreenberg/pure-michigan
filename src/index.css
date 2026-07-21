@@ -277,7 +277,7 @@ button {
 }
 
 .hud-island.is-map {
-  width: 384px;
+  width: min(384px, calc(100vw - 20px));
   height: 58px;
 }
 

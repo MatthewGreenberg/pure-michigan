@@ -37,9 +37,18 @@ export function Camera({ scene }) {
   const [intro, setIntro] = useState(true)
   const { width, height } = useThree((s) => s.size)
   const aspect = width / Math.max(height, 1)
-  const view = MathUtils.clamp((FIELD_HALF * Math.SQRT2 + 2.0) / aspect, 7.0, 8.4)
+  // Landscape keeps the original 8.4 half-height cap. As the viewport narrows
+  // (phones in portrait) the cap opens continuously so the camera backs out
+  // instead of cropping the width: the map hub opens far enough to fit the
+  // whole mitten, the dioramas just enough to read the full tile.
+  const narrow = Math.max(0, 1 - aspect)
+  const maxView = 8.4 + narrow * (scene === 'map' ? 36 : 9.5)
+  const view = MathUtils.clamp((FIELD_HALF * Math.SQRT2 + 2.0) / aspect, 7.0, maxView)
   const zoom = height / (2 * view)
   const defaultZoom = zoom * DEFAULT_ZOOM_SCALE
+  // portrait already sits far back — a full 0.5x intro pull-back would outrun
+  // the intro cloud blanket's plane bounds, so shorten the dolly there
+  const zoomOff = narrow > 0 ? 0.75 : ZOOM_OFF
 
   useEffect(() => {
     const cameraControls = controls.current
@@ -66,14 +75,14 @@ export function Camera({ scene }) {
     // already finished before this mounted (slow GLB load, HMR remount).
     if (!seeded.current) {
       seeded.current = true
-      cameraControls.zoomTo(defaultZoom * ZOOM_OFF, false)
+      cameraControls.zoomTo(defaultZoom * zoomOff, false)
     }
 
     const start = () => { dolly.current = { p: 0 } }
     if (window.__mittenDone) start()
     else window.addEventListener('mitten-done', start, { once: true })
     return () => window.removeEventListener('mitten-done', start)
-  }, [intro, defaultZoom])
+  }, [intro, defaultZoom, zoomOff])
 
   // Very slight mouse-driven yaw: a parent group around the camera sways
   // about world Y, so CameraControls (which owns the camera's local pose)
@@ -95,7 +104,7 @@ export function Camera({ scene }) {
     // easeInOutCubic: the slow start hides under the cloud deck, the settle
     // lands with the last of the blanket burning off
     const e = d.p < 0.5 ? 4 * d.p ** 3 : 1 - (-2 * d.p + 2) ** 3 / 2
-    controls.current.zoomTo(defaultZoom * (ZOOM_OFF + (1 - ZOOM_OFF) * e), false)
+    controls.current.zoomTo(defaultZoom * (zoomOff + (1 - zoomOff) * e), false)
     if (d.p >= 1) {
       dolly.current = null
       setIntro(false)

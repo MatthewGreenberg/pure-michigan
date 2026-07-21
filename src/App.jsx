@@ -181,6 +181,7 @@ function Scenes({ activeScene, onSelect, children }) {
   const grassRoot = useRef(null)
   const cityRoot = useRef(null)
   const annarborRoot = useRef(null)
+  const frames = useRef(0)
   const gl = useThree((s) => s.gl)
 
   // Every shadow caster is static outside transitions (map dive) and marker
@@ -243,6 +244,10 @@ function Scenes({ activeScene, onSelect, children }) {
     blendMaterial.uniforms.tFrom.value = (transitioning ? outgoingFBO : residentFBO).texture
     blendMaterial.uniforms.tTo.value = residentFBO.texture
     gl.setRenderTarget(null)
+
+    // MittenLoader gate: by the time frame 2 runs, frame 1 (which ate the
+    // shader-compile hitch) has fully drawn and presented — safe to fade
+    if (!window.__scenePainted && ++frames.current > 1) window.__scenePainted = true
   }, 0.5)
 
   return (
