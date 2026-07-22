@@ -9,7 +9,7 @@ import { Camera } from './Camera.jsx'
 import { City } from './city/City.jsx'
 import { CloudCover, CloudSheet } from './CloudCover.jsx'
 import { Grass } from './grass/Grass.jsx'
-import { MichiganHub, hoverHubDestination } from './MichiganHub.jsx'
+import { MichiganHub, hoverHubDestination, playWhooshSound } from './MichiganHub.jsx'
 import { MittenLoader, MITTEN_PATH, UP_PATH, MICHIGAN_VIEWBOX } from './MittenLoader.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
@@ -200,6 +200,7 @@ function Scenes({ activeScene, onSelect, children }) {
     hubTransition.from = fromScene.current
     hubTransition.to = activeScene
     hubTransition.p = 0
+    playWhooshSound()
   }, [activeScene])
 
   useFrame(({ gl, camera }, rawDt) => {
