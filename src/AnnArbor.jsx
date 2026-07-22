@@ -203,8 +203,6 @@ function sendPeople(toFormation) {
   const ps = annArborPeople.params
   ps.forEach((p, i) => {
     if (p.ox === undefined) { p.ox = p.hx; p.oz = p.hz; p.owr = p.wr; p.os = p.s }
-    // swell a touch in formation so the letter carries more paint
-    p.s = p.os * (toFormation ? 1.3 : 1)
     if (toFormation) {
       // clump-ordered assignment: each clump traces a coherent arc of the M
       const c = mSpots[Math.floor((i * mSpots.length) / ps.length) % mSpots.length]
@@ -217,7 +215,6 @@ function sendPeople(toFormation) {
     p.sx = p.hx
     p.sz = p.hz
     p.delay = Math.random() * M_DELAY
-    p.wr = 0 // stop wandering while traveling/holding
   })
   formation.t0 = grassUniforms.uTime.value
 }
@@ -243,6 +240,7 @@ function updateFormation(t, dt) {
   }
   const ps = annArborPeople.params
   if (formation.phase === 'gather' || formation.phase === 'release') {
+    const gathering = formation.phase === 'gather'
     let done = true
     for (const p of ps) {
       const k = Math.min(Math.max((t - formation.t0 - p.delay) / M_TRAVEL, 0), 1)
@@ -250,6 +248,11 @@ function updateFormation(t, dt) {
       const e = k * k * (3 - 2 * k)
       p.hx = p.sx + (p.fx - p.sx) * e
       p.hz = p.sz + (p.fz - p.sz) * e
+      // wander circle and 1.3x formation swell ride the same ease — snapping
+      // wr/s in sendPeople teleported everyone up to wr in a single frame
+      const f = gathering ? e : 1 - e
+      p.wr = p.owr * (1 - f)
+      p.s = p.os * (1 + 0.3 * f)
     }
     if (done) {
       if (formation.phase === 'gather') {
@@ -257,7 +260,6 @@ function updateFormation(t, dt) {
         formation.t0 = t
       } else {
         formation.phase = 'idle'
-        ps.forEach((p) => { p.wr = p.owr })
       }
     }
   } else if (formation.phase === 'hold' && t - formation.t0 > M_HOLD) {
