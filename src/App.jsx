@@ -9,7 +9,7 @@ import { Camera } from './Camera.jsx'
 import { City } from './city/City.jsx'
 import { CloudCover, CloudSheet } from './CloudCover.jsx'
 import { Grass } from './grass/Grass.jsx'
-import { MichiganHub, hoverHubDestination, playWhooshSound } from './MichiganHub.jsx'
+import { MichiganHub, hoverHubDestination, playWhooshSound, unlockAudio } from './MichiganHub.jsx'
 import { MittenLoader, MITTEN_PATH, UP_PATH, MICHIGAN_VIEWBOX } from './MittenLoader.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
@@ -71,7 +71,10 @@ function syncSceneAudio(scene = wantedAudioScene) {
   applyMuteVolumes()
 }
 if (typeof window !== 'undefined') {
-  window.addEventListener('pointerdown', () => syncSceneAudio())
+  window.addEventListener('pointerdown', () => {
+    unlockAudio()
+    syncSceneAudio()
+  })
 }
 
 function SceneAudio({ scene }) {

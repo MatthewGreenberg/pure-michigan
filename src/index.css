@@ -228,18 +228,62 @@ button {
   position: absolute;
   inset: 0;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  background: #1c4966;
-  transition: opacity 0.8s ease;
 }
 
 .mitten-loader.done {
-  opacity: 0;
   pointer-events: none;
+}
+
+.mitten-veil {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.mitten-loader-ui {
+  position: absolute;
+  top: calc(50% + 122px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  transition: opacity 0.45s ease;
+}
+
+.mitten-loader.done .mitten-loader-ui {
+  opacity: 0;
+}
+
+.mitten-enter {
+  padding: 9px 34px;
+  border: 1px solid rgba(232, 241, 228, 0.55);
+  border-radius: 999px;
+  background: transparent;
+  color: #e8f1e4;
+  font-family: Quicksand, ui-sans-serif, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.35em;
+  text-indent: 0.35em;
+  cursor: pointer;
+  opacity: 0;
+  animation: mitten-enter-in 0.9s ease 0.15s forwards;
+  transition: background 240ms ease, border-color 240ms ease;
+}
+
+.mitten-enter:hover {
+  background: rgba(232, 241, 228, 0.14);
+  border-color: rgba(232, 241, 228, 0.9);
+}
+
+@keyframes mitten-enter-in {
+  to {
+    opacity: 1;
+  }
 }
 
 .mitten-loader-label {

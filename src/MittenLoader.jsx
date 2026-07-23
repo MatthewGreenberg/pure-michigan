@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import { useProgress } from '@react-three/drei'
 
 const MIN_MS = 4000
+const REVEAL_MS = 2100
 const START = performance.now()
+// expansion anchor: a point deep inside the lower peninsula, so the window's
+// edges are all off-screen before the expansion ends (mitten inradius there is
+// ~78 viewBox units; end scale is hypot(viewport)/70 for margin)
+const AX = 340
+const AY = 480
 
 // Simplified from Phizzy's SimpleMichigan.svg (CC BY-SA 3.0):
 // https://commons.wikimedia.org/wiki/File:SimpleMichigan.svg
@@ -48,47 +54,89 @@ export const MICHIGAN_VIEWBOX = `${VB_LEFT} ${VB_TOP} ${VB_W} ${VB_H}`
 export function MittenLoader() {
   const { active, progress } = useProgress()
   const [elapsed, setElapsed] = useState(0)
-  const [hidden, setHidden] = useState(false)
+  const [revealAt, setRevealAt] = useState(0)
   // __scenePainted flips in App's Scenes loop once a full frame has actually
-  // hit the canvas — without it the fade lands on the shader-compile black gap
-  const done = elapsed >= MIN_MS && !active && progress >= 100 && !!window.__scenePainted
+  // hit the canvas — without it the window opens on the shader-compile black gap
+  const ready = elapsed >= MIN_MS && !active && progress >= 100 && !!window.__scenePainted
+  const reveal = revealAt ? Math.min((elapsed - revealAt) / REVEAL_MS, 1) : 0
 
   useEffect(() => {
-    if (done) {
-      // tell the camera the reveal is starting (Camera.jsx intro dolly)
-      window.__mittenDone = true
-      window.dispatchEvent(new Event('mitten-done'))
-      const t = setTimeout(() => setHidden(true), 800)
-      return () => clearTimeout(t)
-    }
+    if (reveal >= 1) return
     const raf = requestAnimationFrame(() => setElapsed(performance.now() - START))
     return () => cancelAnimationFrame(raf)
   })
 
-  if (hidden) return null
+  if (reveal >= 1) return null
+
+  const enter = () => {
+    if (revealAt) return
+    // tell the camera + intro clouds the reveal is starting (Camera.jsx dolly,
+    // CloudCover burn-off) — the click gesture also unlocks audio autoplay
+    window.__mittenDone = true
+    window.dispatchEvent(new Event('mitten-done'))
+    setRevealAt(performance.now() - START)
+  }
 
   // useProgress jumps in big steps (two assets) and can sit on one number for
   // seconds on a slow network — creep the cap asymptotically toward 99 so the
-  // fill never looks stalled; 100 waits for real done (loaded + first paint)
+  // fill never looks stalled; 100 waits for real ready (loaded + first paint)
   const ceil = progress >= 100 ? 100 : progress + (99 - progress) * (1 - Math.exp(-elapsed / 9000))
-  const pct = done ? 100 : Math.min((elapsed / MIN_MS) * 100, ceil, 99)
+  const pct = ready ? 100 : Math.min((elapsed / MIN_MS) * 100, ceil, 99)
   const fillTop = VB_TOP + (1 - pct / 100) * VB_H
 
+  // the veil is a fullscreen rect masked by an inverse Michigan: the shape is a
+  // transparent WINDOW onto the live canvas (progress reveals it bottom-up),
+  // and on ENTER the window scales up around the anchor until it swallows the
+  // whole viewport
+  const w = window.innerWidth
+  const h = window.innerHeight
+  const s0 = 200 / VB_W
+  const e = reveal < 0.5 ? 4 * reveal ** 3 : 1 - (-2 * reveal + 2) ** 3 / 2
+  const s = s0 + (Math.hypot(w, h) / 70 - s0) * e
+  const ax = w / 2 + (AX - (VB_LEFT + VB_W / 2)) * s0
+  const ay = h / 2 + (AY - (VB_TOP + VB_H / 2)) * s0
+  const tf = `translate(${ax} ${ay}) scale(${s}) translate(${-AX} ${-AY})`
+
   return (
-    <div className={`mitten-loader${done ? ' done' : ''}`}>
-      <svg viewBox={MICHIGAN_VIEWBOX} width="200" aria-hidden="true">
-        <clipPath id="mitten-fill">
-          <rect x={VB_LEFT} y={fillTop} width={VB_W} height={VB_H} />
-        </clipPath>
-        <path d={UP_PATH} fill="none" stroke="#e8f1e4" strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <path d={MITTEN_PATH} fill="none" stroke="#e8f1e4" strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <g clipPath="url(#mitten-fill)">
-          <path d={UP_PATH} fill="#7fa86b" />
-          <path d={MITTEN_PATH} fill="#7fa86b" />
+    <div className={`mitten-loader${revealAt ? ' done' : ''}`}>
+      <svg className="mitten-veil" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <clipPath id="mitten-fill">
+            <rect x={VB_LEFT} y={fillTop} width={VB_W} height={VB_H} />
+          </clipPath>
+          <mask id="mitten-window" maskUnits="userSpaceOnUse" x="0" y="0" width={w} height={h}>
+            <rect width={w} height={h} fill="#fff" />
+            <g transform={tf}>
+              <g clipPath="url(#mitten-fill)">
+                <path d={UP_PATH} fill="#000" />
+                <path d={MITTEN_PATH} fill="#000" />
+              </g>
+            </g>
+          </mask>
+        </defs>
+        <rect width={w} height={h} fill="#1c4966" mask="url(#mitten-window)" />
+        {/* opaque fill capping the window while loading — dissolves over the
+            first stretch of the reveal so the scene appears inside the shape
+            before the window expands */}
+        <g transform={tf} opacity={1 - Math.min(reveal / 0.35, 1)}>
+          <g clipPath="url(#mitten-fill)">
+            <path d={UP_PATH} fill="#7fa86b" />
+            <path d={MITTEN_PATH} fill="#7fa86b" />
+          </g>
+        </g>
+        <g transform={tf} opacity={1 - e} fill="none" stroke="#e8f1e4" strokeLinejoin="round">
+          <path d={UP_PATH} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          <path d={MITTEN_PATH} strokeWidth="2" vectorEffect="non-scaling-stroke" />
         </g>
       </svg>
-      <div className="mitten-loader-label">PURE MICHIGAN</div>
-      <div className="mitten-loader-pct">{Math.round(pct)}%</div>
+      <div className="mitten-loader-ui">
+        <div className="mitten-loader-label">PURE MICHIGAN</div>
+        {ready ? (
+          <button className="mitten-enter" onClick={enter} type="button">ENTER</button>
+        ) : (
+          <div className="mitten-loader-pct">{Math.round(pct)}%</div>
+        )}
+      </div>
     </div>
   )
 }

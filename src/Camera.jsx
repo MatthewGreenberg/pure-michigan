@@ -10,7 +10,7 @@ const POSITION = [12.5, 11, 12.5]
 
 // intro dolly: pulled well back from the resting zoom, slow cinematic push
 // through the parting cloud deck — a straight dolly, no orbital drift
-const INTRO_SECONDS = 2.4
+const INTRO_SECONDS = 3.2
 const ZOOM_OFF = 0.5
 const MOUSE_YAW = 0.035 // radians of parallax sway at the screen edge
 const MIN_ZOOM_SCALE = 0.78

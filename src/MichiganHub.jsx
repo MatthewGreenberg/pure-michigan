@@ -6,7 +6,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { MITTEN_PATH, UP_PATH } from './MittenLoader.jsx'
 import { uniforms as grassUniforms } from './grass/material.js'
-import { sceneRendering } from './sceneState.js'
+import { audioMuted, sceneRendering } from './sceneState.js'
 
 const MAP_SCALE = 0.0225
 const MAP_CENTER_X = 258
@@ -281,21 +281,31 @@ export function hoverHubDestination(id) {
 let audioCtx = null
 let noiseBuffer = null
 let lastHoverId = null
-// Returns a running context, or null before the first user gesture
-// (ponytail: autoplay policy — hover/transition sounds are just silent until then).
-function audio() {
-  audioCtx ??= new AudioContext()
-  if (audioCtx.state === 'suspended') return null
+
+// Hosted browsers keep AudioContext suspended until resume() runs inside a
+// real user gesture. Whoosh fires from a useEffect (after the click), so we
+// unlock on pointerdown and keep the context running for later plays.
+// eslint-disable-next-line react-refresh/only-export-components -- unlock shared with App
+export function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext
+  if (!AC) return
+  audioCtx ??= new AC()
   if (!noiseBuffer) {
     noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 2, audioCtx.sampleRate)
     const data = noiseBuffer.getChannelData(0)
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1
   }
+  if (audioCtx.state === 'suspended') void audioCtx.resume()
+}
+
+function audio() {
+  if (!audioCtx || audioCtx.state !== 'running') return null
   return audioCtx
 }
 
 // Filtered noise burst: the one building block behind both sounds.
 function playNoise({ type, freqRamp, gainRamp, duration }) {
+  if (audioMuted.on) return
   const ctx = audio()
   if (!ctx) return
   const t = ctx.currentTime
@@ -315,36 +325,45 @@ function playNoise({ type, freqRamp, gainRamp, duration }) {
   src.stop(t + duration)
 }
 
+function whenAudioReady(fn) {
+  unlockAudio()
+  if (!audioCtx) return
+  if (audioCtx.state === 'running') fn()
+  else void audioCtx.resume().then(() => { if (audioCtx.state === 'running') fn() })
+}
+
 // Dedupes so onPointerMove's repeated fires play once per hover-start.
 // Simple C4 sine blip, fast attack, short decay.
 function playHoverSound(id) {
   if (id === lastHoverId) return
   lastHoverId = id
-  if (!id) return
-  const ctx = audio()
-  if (!ctx) return
-  const t = ctx.currentTime
-  const osc = ctx.createOscillator()
-  osc.frequency.value = 261.63
-  const gain = ctx.createGain()
-  gain.gain.setValueAtTime(0, t)
-  gain.gain.linearRampToValueAtTime(0.12, t + 0.005)
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2)
-  osc.connect(gain).connect(ctx.destination)
-  osc.start(t)
-  osc.stop(t + 0.2)
+  if (!id || audioMuted.on) return
+  whenAudioReady(() => {
+    const ctx = audio()
+    if (!ctx) return
+    const t = ctx.currentTime
+    const osc = ctx.createOscillator()
+    osc.frequency.value = 261.63
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0, t)
+    gain.gain.linearRampToValueAtTime(0.12, t + 0.005)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start(t)
+    osc.stop(t + 0.2)
+  })
 }
 
 // Long airy sweep matching the ~1.6s scene transition: lowpassed noise
 // that opens up, crests mid-flight, and settles as the new scene lands.
 // eslint-disable-next-line react-refresh/only-export-components -- dev-only HMR granularity
 export function playWhooshSound() {
-  playNoise({
+  whenAudioReady(() => playNoise({
     type: 'lowpass',
     freqRamp: [[0, 120], [0.6, 700], [1.4, 90]],
     gainRamp: [[0.35, 0.2], [0.8, 0.16]],
     duration: 1.5,
-  })
+  }))
 }
 
 const CITY_BLOCKS = [
