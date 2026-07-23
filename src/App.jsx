@@ -13,6 +13,7 @@ import { MichiganHub, hoverHubDestination, playWhooshSound, unlockAudio } from '
 import { MittenLoader, MITTEN_PATH, UP_PATH, MICHIGAN_VIEWBOX } from './MittenLoader.jsx'
 import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
+import { Bike } from './Bike.jsx'
 import { SoilBlock } from './SoilBlock.jsx'
 import { Sky } from './Sky.jsx'
 import { START_SCENE, hubTransition, audioMuted } from './sceneState.js'
@@ -582,6 +583,7 @@ export default function App() {
             <MeadowLights />
             <Ocean />
             <Scenery />
+            <Bike />
             <Birds />
             {/* flat base under the whole grid — color synced to blade roots via leva */}
             <mesh rotation-x={-Math.PI / 2} position-y={-0.01} material={groundMaterial}>
