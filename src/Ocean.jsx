@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { useClickCursor } from './ClickHint.jsx'
 import { GRID, TILE } from './grass/constants.js'
 import { uniforms as grassUniforms } from './grass/material.js'
-import { hubTransition, sceneRendering } from './sceneState.js'
+import { audioMuted, hubTransition, sceneRendering } from './sceneState.js'
 import { coastUniforms, FIELD_HALF, LAND_EDGE_Z, WATERLINE_Z } from './coast.js'
 
 // The ocean is clipped to the tile footprint: exactly as wide as the field,
@@ -208,17 +208,26 @@ const stones = Array.from({ length: STONE_N }, () => {
   const mesh = new THREE.Mesh(stoneGeometry, stoneMaterial)
   mesh.visible = false
   mesh.raycast = NO_RAYCAST
-  return { mesh, vel: new THREE.Vector3(), state: 'idle', age: 0 }
+  return { mesh, vel: new THREE.Vector3(), state: 'idle', age: 0, bounces: 0 }
 })
 const stoneRig = new THREE.Group()
 stones.forEach((s) => stoneRig.add(s.mesh))
 let throwStamp = 0
+
+function playRockSkip(bounce) {
+  if (audioMuted.on) return
+  const a = new Audio('/sounds/rock-skip.mp3')
+  // 5–50% on first hit, each bounce halves from there
+  a.volume = (0.05 + Math.random() * 0.45) * Math.pow(0.5, bounce)
+  a.play().catch(() => {})
+}
 
 function throwStone(target) {
   let s = stones.find((x) => x.state === 'idle')
   if (!s) s = stones.reduce((a, x) => (x.age < a.age ? x : a))
   s.age = ++throwStamp
   s.state = 'fly'
+  s.bounces = 0
   s.mesh.visible = true
   s.mesh.position.copy(THROW_FROM)
   // aim so the first descent crosses water level right at the click point
@@ -242,6 +251,7 @@ function updateStones(dt) {
         s.vel.y *= -0.55
         s.vel.x *= 0.8
         s.vel.z *= 0.8
+        playRockSkip(s.bounces++)
         if (s.vel.y < 0.5) {
           // out of juice: plunk under with the big ring
           s.state = 'sink'

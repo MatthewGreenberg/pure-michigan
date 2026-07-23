@@ -15,7 +15,7 @@ import { Ocean } from './Ocean.jsx'
 import { Scenery } from './Scenery.jsx'
 import { SoilBlock } from './SoilBlock.jsx'
 import { Sky } from './Sky.jsx'
-import { START_SCENE, hubTransition } from './sceneState.js'
+import { START_SCENE, hubTransition, audioMuted } from './sceneState.js'
 import { initOnDemandShadows, armShadows } from './shadows.js'
 import { skyMaterial, skyUniforms } from './skyMaterial.js'
 import { StylePass } from './StyleEffect.jsx'
@@ -24,6 +24,94 @@ import { GRID, TILE } from './grass/constants.js'
 import { lowGPU } from './gpu.js'
 
 const TRANSITION_SECONDS = 1.6
+
+// Ambient beds. Map bed runs for the whole session under everything else;
+// diorama tracks swap with the active scene. (ponytail: HTMLAudioElement —
+// autoplay stays silent until the first pointerdown unlocks it.)
+const MAP_VOL = 0.1
+const MAP_BED = (() => {
+  const a = new Audio('/sounds/map.m4a')
+  a.loop = true
+  a.preload = 'auto'
+  a.volume = MAP_VOL
+  return a
+})()
+const SCENE_TRACKS = {
+  city: { src: '/sounds/detroit.m4a', volume: 0.4 },
+  meadow: { src: '/sounds/up-north.m4a', volume: 0.7 },
+  annarbor: { src: '/sounds/ann-arbor.m4a', volume: 1.0 },
+}
+const sceneAudios = Object.fromEntries(
+  Object.entries(SCENE_TRACKS).map(([id, { src, volume }]) => {
+    const a = new Audio(src)
+    a.loop = true
+    a.preload = 'auto'
+    a.volume = volume
+    return [id, a]
+  }),
+)
+function applyMuteVolumes() {
+  const silent = audioMuted.on
+  MAP_BED.volume = silent ? 0 : MAP_VOL
+  for (const [id, a] of Object.entries(sceneAudios)) {
+    a.volume = silent ? 0 : SCENE_TRACKS[id].volume
+  }
+}
+let wantedAudioScene = START_SCENE
+function syncSceneAudio(scene = wantedAudioScene) {
+  wantedAudioScene = scene
+  MAP_BED.play().catch(() => {})
+  for (const [id, a] of Object.entries(sceneAudios)) {
+    if (id === scene) a.play().catch(() => {})
+    else {
+      a.pause()
+      a.currentTime = 0
+    }
+  }
+  applyMuteVolumes()
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', () => syncSceneAudio())
+}
+
+function SceneAudio({ scene }) {
+  useEffect(() => { syncSceneAudio(scene) }, [scene])
+  return null
+}
+
+function MuteToggle() {
+  const [muted, setMuted] = useState(false)
+  return (
+    <button
+      className={`hud-mute${muted ? ' is-muted' : ''}`}
+      type="button"
+      aria-label={muted ? 'Unmute sound' : 'Mute sound'}
+      aria-pressed={muted}
+      onClick={() => {
+        const next = !muted
+        setMuted(next)
+        audioMuted.on = next
+        applyMuteVolumes()
+      }}
+    >
+      <svg viewBox="0 0 40 24" aria-hidden="true">
+        <defs>
+          <clipPath id="hud-mute-clip">
+            <rect width="40" height="24" />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#hud-mute-clip)">
+          <g className="hud-mute-scroll">
+            <path
+              className="hud-mute-wave"
+              d="M-20 12 Q-15 4 -10 12 T0 12 T10 12 T20 12 T30 12 T40 12 T50 12 T60 12"
+            />
+          </g>
+        </g>
+      </svg>
+    </button>
+  )
+}
 
 // Light rig for the meadow's Lambert-lit set dressing (cottage, loungers,
 // birds) — grass/ground/ocean materials ignore lights. Lived in Rocks.jsx
@@ -416,6 +504,7 @@ function Hud({ activeScene, onSelect }) {
         </svg>
       </button>
       <AboutCard />
+      <MuteToggle />
       <div className={`hud-island${onMap ? ' is-map' : ' is-scene'}`}>
         <nav
           className="hud-island-map"
@@ -501,6 +590,7 @@ export default function App() {
         </Suspense>
       </Canvas>
       <Hud activeScene={activeScene} onSelect={setActiveScene} />
+      <SceneAudio scene={activeScene} />
       <MittenLoader />
     </main>
   )

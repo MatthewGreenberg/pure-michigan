@@ -6,7 +6,7 @@ import { useControls } from 'leva'
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js'
 import * as THREE from 'three'
 import { uniforms as grassUniforms } from '../grass/material.js'
-import { hubTransition, sceneRendering } from '../sceneState.js'
+import { audioMuted, hubTransition, sceneRendering } from '../sceneState.js'
 import { CityBase } from './CityBase.jsx'
 import { makePeople, People } from './People.jsx'
 
@@ -231,6 +231,13 @@ const _m = new THREE.Matrix4()
   for (let i = 0; i < MAX_BALLS * TRAIL_N; i++) trail.setMatrixAt(i, _m)
 }
 
+function playBaseballCrack() {
+  if (audioMuted.on) return
+  const a = new Audio('/sounds/baseball-crack.mp3')
+  a.volume = 0.35 + Math.random() * 0.55
+  a.play().catch(() => {})
+}
+
 function launchBall(t) {
   // free slot, else recycle the oldest
   let b = balls.find((x) => x.state === 'idle')
@@ -239,6 +246,7 @@ function launchBall(t) {
   b.state = 'fly'
   b.root.visible = true
   b.root.position.copy(HOME_PLATE)
+  playBaseballCrack()
   b.root.position.y = 0.42 + ballParams.r // field surface + radius: starts airborne
   // spray + power jitter: deterministic off timestamp + slot (no Math.random)
   const seed = t * 1741.3 + b.age * 7.13

@@ -10,6 +10,9 @@ export const START_SCENE = typeof window === 'undefined'
 
 export const hubTransition = { from: START_SCENE, to: START_SCENE, p: 1 }
 
+// Shared mute flag for ambient beds + one-shot SFX (Ocean / City).
+export const audioMuted = { on: false }
+
 export function sceneRendering(name) {
   return hubTransition.to === name || (hubTransition.p < 1 && hubTransition.from === name)
 }
